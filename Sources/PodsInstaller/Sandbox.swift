@@ -66,7 +66,7 @@ public struct Sandbox: Sendable {
         let base = (isPublic ? publicHeadersURL : privateHeadersURL).appendingPathComponent(directory, isDirectory: true)
         let fileManager = FileManager.default
         for header in headers {
-            var relative = (header as NSString).lastPathComponent
+            var relative = header.lastPathComponent
             if let mappingsDir, header.hasPrefix(mappingsDir.hasSuffix("/") ? mappingsDir : mappingsDir + "/") {
                 relative = String(header.dropFirst(mappingsDir.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             }

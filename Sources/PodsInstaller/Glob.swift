@@ -1,4 +1,5 @@
 import Foundation
+import PodsCore
 
 /// File pattern matching with the semantics of Ruby's `Dir.glob` as used by CocoaPods:
 /// `*` (no `/`), `?`, `**/` (zero or more directories), `{a,b}` alternation and `[abc]` classes.
@@ -108,7 +109,7 @@ struct Glob {
             if isDirectory && !Self.isOpaqueBundle(path) {
                 guard let directoryExtensions else { continue }
                 for (child, childIsDirectory) in paths where child.hasPrefix(path + "/") {
-                    let ext = (child as NSString).pathExtension
+                    let ext = child.pathExtension
                     if (directoryExtensions.contains(ext) && !childIsDirectory) || (childIsDirectory && Self.isOpaqueBundle(child) && directoryExtensions.contains(ext)),
                        seen.insert(child).inserted {
                         result.append(child)
@@ -129,6 +130,6 @@ struct Glob {
 
     static func isOpaqueBundle(_ path: String) -> Bool {
         ["framework", "xcframework", "bundle", "xcassets", "lproj", "xcdatamodeld", "xcmappingmodel", "storyboard", "xib"]
-            .contains((path as NSString).pathExtension)
+            .contains(path.pathExtension)
     }
 }

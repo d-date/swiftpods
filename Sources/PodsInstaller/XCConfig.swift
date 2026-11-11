@@ -91,7 +91,7 @@ struct XCConfigBuilder {
     /// The quoted directory containing `path` inside the pod.
     private func containingDirectory(_ path: String, of target: PodTarget) -> String {
         let root = podRootSetting(target.pod)
-        let directory = (path as NSString).deletingLastPathComponent
+        let directory = path.deletingLastPathComponent
         return XCConfig.quoted(directory.isEmpty ? root : root + "/" + directory)
     }
 
@@ -125,14 +125,14 @@ struct XCConfigBuilder {
 
     private func vendoredLibraryNames(_ target: PodTarget) -> [String] {
         target.files.vendoredLibraries.map {
-            var name = (($0 as NSString).lastPathComponent as NSString).deletingPathExtension
+            var name = $0.lastPathComponent.deletingPathExtension
             if name.hasPrefix("lib") { name.removeFirst(3) }
             return name
         } + target.files.xcframeworks.filter { !$0.isFramework }.map(\.linkName)
     }
 
     private func vendoredFrameworkNames(_ target: PodTarget) -> [String] {
-        target.files.plainFrameworks.map { (($0 as NSString).lastPathComponent as NSString).deletingPathExtension }
+        target.files.plainFrameworks.map { $0.lastPathComponent.deletingPathExtension }
             + target.files.xcframeworks.filter(\.isFramework).map(\.linkName)
     }
 

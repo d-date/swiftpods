@@ -23,10 +23,11 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
         .package(url: "https://github.com/jpsim/Yams.git", from: "6.0.0"),
         .package(url: "https://github.com/tuist/XcodeProj.git", from: "9.0.0"),
+        .package(url: "https://github.com/swiftlang/swift-subprocess.git", from: "1.0.2"),
     ],
     targets: [
         // Foundation types shared by every module: versions, requirements, platforms, shell.
-        .target(name: "PodsCore"),
+        .target(name: "PodsCore", dependencies: [.product(name: "Subprocess", package: "swift-subprocess")]),
         // A small evaluator for the Ruby subset used by Podfiles and podspecs.
         .target(name: "PodsDSL", dependencies: ["PodsCore"]),
         // Podspec model (JSON + Ruby DSL) and per-platform attribute resolution.

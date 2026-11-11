@@ -36,6 +36,9 @@ usually need: the DSL entry point(s), the JSON reader, and a test for each forma
   mutable state goes in an `actor` or behind `Mutex`. Avoid `@unchecked Sendable` and
   `nonisolated(unsafe)` (the only exception is the manifest registry in `SwiftPodsDescription`,
   which runs in a single-threaded manifest program).
+* Don't bridge to `NSString` (`as NSString`): use the `String` path helpers in `PodsCore`
+  (`lastPathComponent`, `pathExtension`, …) and `Range(_:in:)` for `NSRange`s. Run external
+  commands through `Shell`, which uses swift-subprocess, not `Foundation.Process`.
 * `InternalImportsByDefault` is on: use `public import` only when a module's types appear in
   public API.
 * `SwiftPodsDescription` must only depend on the standard library — it is compiled together

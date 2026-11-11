@@ -154,7 +154,7 @@ struct PodsProjectGenerator {
         let umbrellaName = "\(target.name)-umbrella.h"
         let needsModuleMap = target.buildType.isFramework || files.hasObjCHeaders
         if needsModuleMap {
-            let umbrellaHeaders = files.publicHeaders.map { ($0 as NSString).lastPathComponent }
+            let umbrellaHeaders = files.publicHeaders.map { $0.lastPathComponent }
             let umbrella = supportFile(target.name, umbrellaName)
             try write(SupportFiles.umbrellaHeader(moduleName: target.moduleName, headers: umbrellaHeaders, platform: target.platform.name), to: umbrella)
             builder.supportFileReference(umbrella)
@@ -222,7 +222,7 @@ struct PodsProjectGenerator {
         let requiresARC = consumers.allSatisfy(\.requiresARC)
         var sourceFiles = files.compiledSources.map { path -> PBXBuildFile in
             var flags = compilerFlags
-            let ext = (path as NSString).pathExtension
+            let ext = path.pathExtension
             if !requiresARC, ext == "m" || ext == "mm" { flags.append("-fno-objc-arc") }
             let inhibit = target.inhibitWarnings && ext != "swift" ? ["-w", "-Xanalyzer", "-analyzer-disable-all-checks"] : []
             flags += inhibit
@@ -317,7 +317,7 @@ struct PodsProjectGenerator {
             let base = sandbox.publicHeadersURL.appendingPathComponent(podDirectory)
             let umbrellaName = "\(target.name)-umbrella.h"
             let headers = files.publicHeaders.map { header -> String in
-                var relative = (header as NSString).lastPathComponent
+                var relative = header.lastPathComponent
                 if let mappings = files.headerMappingsDir, header.hasPrefix(mappings) {
                     relative = String(header.dropFirst(mappings.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
                 }
@@ -662,7 +662,7 @@ final class ProjectBuilder {
     }
 
     static func fileType(_ path: String) -> String? {
-        switch (path as NSString).pathExtension.lowercased() {
+        switch path.pathExtension.lowercased() {
         case "swift": "sourcecode.swift"
         case "h": "sourcecode.c.h"
         case "hh", "hpp", "hxx": "sourcecode.cpp.h"

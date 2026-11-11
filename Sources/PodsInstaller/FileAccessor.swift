@@ -44,7 +44,7 @@ struct FileAccessor: Sendable {
         var isFramework: Bool { libraryPath.hasSuffix(".framework") }
         /// The name passed to the linker (`-framework Foo` / `-lFoo`).
         var linkName: String {
-            var name = (libraryPath as NSString).deletingPathExtension
+            var name = libraryPath.deletingPathExtension
             if !isFramework, name.hasPrefix("lib") { name.removeFirst(3) }
             return name
         }
@@ -65,8 +65,8 @@ struct FileAccessor: Sendable {
     /// Vendored `.framework` bundles (excluding xcframeworks).
     var plainFrameworks: [String] { vendoredFrameworks.filter { $0.hasSuffix(".framework") } }
 
-    var compiledSources: [String] { sourceFiles.filter { Self.compiledExtensions.contains(($0 as NSString).pathExtension) } }
-    var headers: [String] { sourceFiles.filter { Self.headerExtensions.contains(($0 as NSString).pathExtension) } }
+    var compiledSources: [String] { sourceFiles.filter { Self.compiledExtensions.contains($0.pathExtension) } }
+    var headers: [String] { sourceFiles.filter { Self.headerExtensions.contains($0.pathExtension) } }
     var usesSwift: Bool { sourceFiles.contains { $0.hasSuffix(".swift") } }
     var hasObjCHeaders: Bool { !publicHeaders.isEmpty }
     var hasCompiledSources: Bool { !compiledSources.isEmpty }
@@ -140,7 +140,7 @@ struct FileAccessor: Sendable {
             projectHeaders += allHeaders.filter { !publicHeaders.contains($0) && !privateHeaders.contains($0) && !projectHeaders.contains($0) }
         }
         if moduleMap == nil {
-            let directories = Set(publicHeaders.map { ($0 as NSString).deletingLastPathComponent })
+            let directories = Set(publicHeaders.map { $0.deletingLastPathComponent })
             shippedModuleMap = directories.sorted()
                 .map { $0.isEmpty ? "module.modulemap" : $0 + "/module.modulemap" }
                 .first { FileManager.default.fileExists(atPath: root.appendingPathComponent($0).path) }

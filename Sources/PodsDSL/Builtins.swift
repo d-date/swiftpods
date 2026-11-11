@@ -295,7 +295,9 @@ enum Builtins {
                     result = regex.stringByReplacingMatches(in: s, range: range, withTemplate: template)
                 } else if let match = regex.firstMatch(in: s, range: range) {
                     let replaced = regex.replacementString(for: match, in: s, offset: 0, template: template)
-                    result = (s as NSString).replacingCharacters(in: match.range, with: replaced)
+                    var replacedString = s
+                    if let matched = Range(match.range, in: s) { replacedString.replaceSubrange(matched, with: replaced) }
+                    result = replacedString
                 } else {
                     result = s
                 }

@@ -1,4 +1,6 @@
 public import Foundation
+import Subprocess
+import System
 
 /// Runs external commands (git, curl, unzip, ...) asynchronously.
 public struct Shell: Sendable {
@@ -18,6 +20,9 @@ public struct Shell: Sendable {
         }
     }
 
+    /// Upper bound for collected stdout/stderr. `xcodebuild` logs reach tens of megabytes.
+    private static let outputLimit = 256 * 1024 * 1024
+
     public var environment: [String: String]?
 
     public init(environment: [String: String]? = nil) {
@@ -32,46 +37,28 @@ public struct Shell: Sendable {
         return output
     }
 
-    /// Runs a command and returns its output regardless of exit status.
+    /// Runs a command (the first element, resolved through `PATH`) and returns its output
+    /// regardless of exit status.
     public func execute(_ command: [String], in directory: URL? = nil) async throws -> Output {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = command
-        if let directory { process.currentDirectoryURL = directory }
-        if let environment {
-            process.environment = ProcessInfo.processInfo.environment.merging(environment) { $1 }
-        }
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-        process.standardInput = FileHandle.nullDevice
+        guard let executable = command.first else { throw Failure(command: command, output: Output(status: -1, stdout: "", stderr: "empty command")) }
+        var updates: [Environment.Key: String?] = [:]
+        for (key, value) in environment ?? [:] { updates[Environment.Key(stringLiteral: key)] = value }
 
-        // Drain the pipes concurrently so that large outputs can't dead-lock the child.
-        async let stdoutData = Self.readToEnd(stdoutPipe.fileHandleForReading)
-        async let stderrData = Self.readToEnd(stderrPipe.fileHandleForReading)
-
-        let status: Int32 = try await withCheckedThrowingContinuation { continuation in
-            process.terminationHandler = { continuation.resume(returning: $0.terminationStatus) }
-            do {
-                try process.run()
-            } catch {
-                // The child never started: close our write ends so the readers see EOF.
-                process.terminationHandler = nil
-                try? stdoutPipe.fileHandleForWriting.close()
-                try? stderrPipe.fileHandleForWriting.close()
-                continuation.resume(throwing: error)
-            }
-        }
-        return Output(
-            status: status,
-            stdout: String(decoding: await stdoutData, as: UTF8.self),
-            stderr: String(decoding: await stderrData, as: UTF8.self)
+        // Subprocess drains stdout and stderr concurrently, so large outputs can't dead-lock the child.
+        let result = try await Subprocess.run(
+            // Like a shell: names containing "/" are paths, other names are looked up in PATH.
+            executable.contains("/") ? .path(FilePath(executable)) : .name(executable),
+            arguments: Arguments(Array(command.dropFirst())),
+            environment: .inherit.updating(updates),
+            workingDirectory: directory.map { FilePath($0.path(percentEncoded: false)) },
+            output: .string(limit: Self.outputLimit),
+            error: .string(limit: Self.outputLimit)
         )
-    }
-
-    @concurrent
-    private static func readToEnd(_ handle: FileHandle) async -> Data {
-        (try? handle.readToEnd()) ?? Data()
+        let status: Int32 = switch result.terminationStatus {
+        case .exited(let code): code
+        // Mirror the shell convention for signals (128 + signal number).
+        case .signaled(let signal): 128 + signal
+        }
+        return Output(status: status, stdout: result.standardOutput ?? "", stderr: result.standardError ?? "")
     }
 }

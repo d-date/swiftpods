@@ -140,7 +140,7 @@ struct UserProjectIntegrator {
         if let existing = group.children.compactMap({ $0 as? PBXFileReference }).first(where: { $0.path == path }) {
             return existing
         }
-        let reference = PBXFileReference(sourceTree: .group, name: (path as NSString).lastPathComponent, lastKnownFileType: type, path: path, includeInIndex: true)
+        let reference = PBXFileReference(sourceTree: .group, name: path.lastPathComponent, lastKnownFileType: type, path: path, includeInIndex: true)
         pbxproj.add(object: reference)
         group.children.append(reference)
         return reference

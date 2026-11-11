@@ -30,7 +30,7 @@ SwiftPodsDescription  (standalone; the API imported by Podfile.swift / podspec.s
 
 | Module | Responsibility |
 | --- | --- |
-| `PodsCore` | `Version`, `Requirement`, `Dependency`, `Platform`, async `Shell`, `UI` |
+| `PodsCore` | `Version`, `Requirement`, `Dependency`, `Platform`, async `Shell` (on swift-subprocess), `UI`, `String` path helpers |
 | `PodsDSL` | Tokenizer, parser and evaluator for the Ruby subset used by Podfiles/podspecs |
 | `SwiftPodsDescription` | Public manifest API for Swift manifests (no dependencies) |
 | `PodsManifest` | Compiles and runs Swift manifests, returning their JSON |

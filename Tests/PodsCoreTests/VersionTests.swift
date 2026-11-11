@@ -1,3 +1,4 @@
+import Foundation
 import PodsCore
 import Testing
 
@@ -106,6 +107,35 @@ struct ShellTests {
     @Test func throwsOnFailure() async {
         await #expect(throws: Shell.Failure.self) {
             try await Shell().run("false", [])
+        }
+    }
+
+    @Test func passesEnvironmentAndWorkingDirectory() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data().write(to: directory.appendingPathComponent("marker"))
+
+        let output = try await Shell(environment: ["SWIFTPODS_SHELL_TEST": "value"])
+            .run("sh", ["-c", "echo $SWIFTPODS_SHELL_TEST; ls"], in: directory)
+        #expect(output.stdout == "value\nmarker\n")
+    }
+
+    @Test func drainsLargeOutputOnBothStreams() async throws {
+        // More than a pipe buffer (64 KiB) on each stream must not dead-lock the child.
+        let output = try await Shell().run("sh", ["-c", "head -c 1000000 /dev/zero | tr '\\0' a; head -c 1000000 /dev/zero | tr '\\0' b >&2"])
+        #expect(output.stdout.count == 1_000_000)
+        #expect(output.stderr.count == 1_000_000)
+    }
+
+    @Test func runsExecutableByPath() async throws {
+        let output = try await Shell().run("/bin/echo", ["hello"])
+        #expect(output.stdout == "hello\n")
+    }
+
+    @Test func reportsMissingExecutable() async {
+        await #expect(throws: (any Error).self) {
+            try await Shell().run("swiftpods-no-such-command", [])
         }
     }
 }

@@ -1,4 +1,5 @@
 public import Foundation
+import PodsCore
 
 /// Local variable scope. Blocks get a child scope that can read and assign outer variables.
 final class Scope {
@@ -431,9 +432,9 @@ final class FileObject: DSLObject {
             return .string(base)
         case "dirname":
             let path = call.positional.first?.stringified ?? ""
-            return .string((path as NSString).deletingLastPathComponent.isEmpty ? "." : (path as NSString).deletingLastPathComponent)
+            return .string(path.deletingLastPathComponent.isEmpty ? "." : path.deletingLastPathComponent)
         case "extname":
-            let ext = ((call.positional.first?.stringified ?? "") as NSString).pathExtension
+            let ext = (call.positional.first?.stringified ?? "").pathExtension
             return .string(ext.isEmpty ? "" : "." + ext)
         case "expand_path":
             let base = call.positional.dropFirst().first.map { try? url($0, call) } ?? directory
