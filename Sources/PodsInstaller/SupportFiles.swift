@@ -1,0 +1,422 @@
+import Foundation
+import PodsCore
+import PodsSpec
+
+/// Contents of generated support files. Pure functions, so they are easy to test.
+enum SupportFiles {
+    static func systemImport(for platform: Platform.Name) -> String {
+        switch platform {
+        case .osx: "#import <Cocoa/Cocoa.h>"
+        case .ios, .tvos, .visionos: "#import <UIKit/UIKit.h>"
+        case .watchos: "#import <Foundation/Foundation.h>"
+        }
+    }
+
+    private static func foundationExportPreamble(_ platform: Platform.Name) -> String {
+        """
+        #ifdef __OBJC__
+        \(systemImport(for: platform))
+        #else
+        #ifndef FOUNDATION_EXPORT
+        #if defined(__cplusplus)
+        #define FOUNDATION_EXPORT extern "C"
+        #else
+        #define FOUNDATION_EXPORT extern
+        #endif
+        #endif
+        #endif
+
+        """
+    }
+
+    static func umbrellaHeader(moduleName: String, headers: [String], platform: Platform.Name) -> String {
+        foundationExportPreamble(platform)
+            + headers.map { "#import \"\($0)\"\n" }.joined()
+            + "\nFOUNDATION_EXPORT double \(moduleName)VersionNumber;\n"
+            + "FOUNDATION_EXPORT const unsigned char \(moduleName)VersionString[];\n\n"
+    }
+
+    static func moduleMap(moduleName: String, umbrellaHeader: String, framework: Bool) -> String {
+        """
+        \(framework ? "framework " : "")module \(moduleName) {
+          umbrella header "\(umbrellaHeader)"
+
+          export *
+          module * { export * }
+        }
+
+        """
+    }
+
+    static func prefixHeader(platform: Platform.Name, contents: String?, prefixFile: String?) -> String {
+        var result = foundationExportPreamble(platform)
+        if let prefixFile { result += "#import \"\(prefixFile)\"\n" }
+        if let contents { result += contents + "\n" }
+        return result
+    }
+
+    static func dummySource(name: String) -> String {
+        let identifier = Specification.c99Identifier(name)
+        return """
+        #import <Foundation/Foundation.h>
+        @interface PodsDummy_\(identifier) : NSObject
+        @end
+        @implementation PodsDummy_\(identifier)
+        @end
+
+        """
+    }
+
+    /// `CFBundleShortVersionString` must be numeric.
+    static func shortVersion(_ version: Version) -> String {
+        version.release.prefix(3).map(String.init).joined(separator: ".")
+    }
+
+    static func infoPlist(version: Version, packageType: String = "FMWK") -> String {
+        """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+          <key>CFBundleDevelopmentRegion</key>
+          <string>${PODS_DEVELOPMENT_LANGUAGE}</string>
+          <key>CFBundleExecutable</key>
+          <string>${EXECUTABLE_NAME}</string>
+          <key>CFBundleIdentifier</key>
+          <string>${PRODUCT_BUNDLE_IDENTIFIER}</string>
+          <key>CFBundleInfoDictionaryVersion</key>
+          <string>6.0</string>
+          <key>CFBundleName</key>
+          <string>${PRODUCT_NAME}</string>
+          <key>CFBundlePackageType</key>
+          <string>\(packageType)</string>
+          <key>CFBundleShortVersionString</key>
+          <string>\(shortVersion(version))</string>
+          <key>CFBundleSignature</key>
+          <string>????</string>
+          <key>CFBundleVersion</key>
+          <string>${CURRENT_PROJECT_VERSION}</string>
+          <key>NSPrincipalClass</key>
+          <string></string>
+        </dict>
+        </plist>
+
+        """
+    }
+
+    // MARK: - Acknowledgements
+
+    struct License: Sendable {
+        let pod: String
+        let text: String
+    }
+
+    /// Reads the license text of a pod (inline `text`, the `file`, or a LICENSE-like file at the root).
+    static func license(for spec: Specification, podRoot: URL) -> License? {
+        let license = spec.rootAttribute("license")
+        if let text = license?["text"]?.string { return License(pod: spec.name, text: text) }
+        var candidates: [String] = []
+        if let file = license?["file"]?.string { candidates.append(file) }
+        let entries = (try? FileManager.default.contentsOfDirectory(atPath: podRoot.path)) ?? []
+        candidates += entries.filter { $0.lowercased().hasPrefix("license") || $0.lowercased().hasPrefix("licence") }.sorted()
+        for candidate in candidates {
+            if let text = try? String(contentsOf: podRoot.appendingPathComponent(candidate), encoding: .utf8) {
+                return License(pod: spec.name, text: text)
+            }
+        }
+        return nil
+    }
+
+    static func acknowledgementsMarkdown(_ licenses: [License]) -> String {
+        var result = "# Acknowledgements\nThis application makes use of the following third party libraries:\n"
+        for license in licenses {
+            result += "\n## \(license.pod)\n\n\(license.text.trimmingWhitespace())\n"
+        }
+        return result + "Generated by SwiftPods\n"
+    }
+
+    static func acknowledgementsPlist(_ licenses: [License]) -> String {
+        func escape(_ string: String) -> String {
+            string.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;")
+        }
+        func entry(title: String, text: String) -> String {
+            """
+            \t\t<dict>
+            \t\t\t<key>FooterText</key>
+            \t\t\t<string>\(escape(text))</string>
+            \t\t\t<key>Title</key>
+            \t\t\t<string>\(escape(title))</string>
+            \t\t\t<key>Type</key>
+            \t\t\t<string>PSGroupSpecifier</string>
+            \t\t</dict>
+
+            """
+        }
+        var entries = entry(title: "Acknowledgements", text: "This application makes use of the following third party libraries:")
+        for license in licenses { entries += entry(title: license.pod, text: license.text.trimmingWhitespace()) }
+        entries += entry(title: "", text: "Generated by SwiftPods")
+        return """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+        \t<key>PreferenceSpecifiers</key>
+        \t<array>
+        \(entries)\t</array>
+        \t<key>StringsTable</key>
+        \t<string>Acknowledgements</string>
+        \t<key>Title</key>
+        \t<string>Acknowledgements</string>
+        </dict>
+        </plist>
+
+        """
+    }
+
+    // MARK: - Scripts
+
+    static let checkManifestScript = """
+    diff "${PODS_PODFILE_DIR_PATH}/Podfile.lock" "${PODS_ROOT}/Manifest.lock" > /dev/null
+    if [ $? != 0 ] ; then
+        # print error to STDERR
+        echo "error: The sandbox is not in sync with the Podfile.lock. Run 'swiftpods install' or update your CocoaPods installation." >&2
+        exit 1
+    fi
+    # This output is used by Xcode 'outputs' to avoid re-running this script phase.
+    echo "SUCCESS" > "${SCRIPT_OUTPUT_FILE_0}"
+
+    """
+
+    /// Writes a module map for a Swift static library next to its product, exposing the
+    /// generated `-Swift.h` header (and the Objective-C umbrella header of mixed pods).
+    static func copyCompatibilityHeaderScript(umbrellaHeader: String?) -> String {
+        var script = """
+        COMPATIBILITY_HEADER_PATH="${BUILT_PRODUCTS_DIR}/Swift Compatibility Header/${PRODUCT_MODULE_NAME}-Swift.h"
+        MODULE_MAP_PATH="${BUILT_PRODUCTS_DIR}/${PRODUCT_MODULE_NAME}.modulemap"
+
+        ditto "${DERIVED_SOURCES_DIR}/${PRODUCT_MODULE_NAME}-Swift.h" "${COMPATIBILITY_HEADER_PATH}"
+
+        """
+        if let umbrellaHeader {
+            script += """
+            printf 'module %s {\\n  umbrella header "%s"\\n\\n  export *\\n  module * { export * }\\n}\\n\\nmodule %s.Swift {\\n  header "%s"\\n  requires objc\\n}\\n' \\
+              "${PRODUCT_MODULE_NAME}" "\(umbrellaHeader)" "${PRODUCT_MODULE_NAME}" "${COMPATIBILITY_HEADER_PATH}" > "${MODULE_MAP_PATH}"
+
+            """
+        } else {
+            script += """
+            printf 'module %s {\\n  header "%s"\\n  requires objc\\n}\\n' "${PRODUCT_MODULE_NAME}" "${COMPATIBILITY_HEADER_PATH}" > "${MODULE_MAP_PATH}"
+
+            """
+        }
+        return script
+    }
+
+    /// Embeds dynamic frameworks into the app bundle, per build configuration.
+    static func embedFrameworksScript(frameworksByConfiguration: [(configuration: String, frameworks: [String])]) -> String {
+        var script = """
+        #!/bin/sh
+        set -e
+        set -u
+        set -o pipefail
+
+        function on_error {
+          echo "$(realpath -mq "${0}"):$1: error: Unexpected failure"
+        }
+        trap 'on_error $LINENO' ERR
+
+        if [ -z ${FRAMEWORKS_FOLDER_PATH+x} ]; then
+          # Not an app bundle (e.g. a command line tool); nothing to embed.
+          exit 0
+        fi
+
+        echo "mkdir -p ${CONFIGURATION_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"
+        mkdir -p "${CONFIGURATION_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"
+
+        # Copies and signs a framework.
+        install_framework()
+        {
+          local source="$1"
+          if [ ! -r "${source}" ] && [ -r "${BUILT_PRODUCTS_DIR}/$(basename "$1")" ]; then
+            source="${BUILT_PRODUCTS_DIR}/$(basename "$1")"
+          fi
+          if [ -L "${source}" ]; then
+            source="$(readlink -f "${source}")"
+          fi
+          local destination="${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"
+          echo "rsync --delete -av --filter \\"- CVS/\\" --filter \\"- .svn/\\" --filter \\"- .git/\\" --filter \\"- .hg/\\" --filter \\"- Headers\\" --filter \\"- PrivateHeaders\\" --filter \\"- Modules\\" \\"${source}\\" \\"${destination}\\""
+          rsync --delete -av --filter "- CVS/" --filter "- .svn/" --filter "- .git/" --filter "- .hg/" --filter "- Headers" --filter "- PrivateHeaders" --filter "- Modules" "${source}" "${destination}"
+
+          local basename
+          basename="$(basename -s .framework "$1")"
+          local binary="${destination}/${basename}.framework/${basename}"
+          if ! [ -r "$binary" ]; then
+            binary="${destination}/${basename}"
+          fi
+          # Static frameworks don't need to be embedded or signed.
+          if [ -r "$binary" ] && file "$binary" | grep -q "current ar archive"; then
+            rm -rf "${destination}/${basename}.framework"
+            return
+          fi
+          code_sign_if_enabled "${destination}/$(basename "$1")"
+        }
+
+        # Signs a framework with the provided identity.
+        code_sign_if_enabled() {
+          if [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" -a "${CODE_SIGNING_REQUIRED:-}" != "NO" -a "${CODE_SIGNING_ALLOWED}" != "NO" ]; then
+            echo "Code Signing $1 with Identity ${EXPANDED_CODE_SIGN_IDENTITY_NAME}"
+            /usr/bin/codesign --force --sign ${EXPANDED_CODE_SIGN_IDENTITY} ${OTHER_CODE_SIGN_FLAGS:-} --preserve-metadata=identifier,entitlements "$1"
+          fi
+        }
+
+
+        """
+        for (configuration, frameworks) in frameworksByConfiguration where !frameworks.isEmpty {
+            script += "if [[ \"$CONFIGURATION\" == \"\(configuration)\" ]]; then\n"
+            for framework in frameworks { script += "  install_framework \"\(framework)\"\n" }
+            script += "fi\n"
+        }
+        return script
+    }
+
+    /// Copies the slice of each xcframework matching the platform being built into
+    /// `${PODS_XCFRAMEWORKS_BUILD_DIR}/<target>`, like CocoaPods' `[CP] Copy XCFrameworks`.
+    static func copyXCFrameworksScript(_ xcframeworks: [(path: String, destination: String)]) -> String {
+        var script = """
+        #!/bin/sh
+        set -e
+        set -u
+        set -o pipefail
+
+        PLISTBUDDY=/usr/libexec/PlistBuddy
+
+        case "${PLATFORM_NAME}" in
+          iphoneos) PLATFORM="ios"; VARIANT="" ;;
+          iphonesimulator) PLATFORM="ios"; VARIANT="simulator" ;;
+          macosx)
+            PLATFORM="macos"; VARIANT=""
+            if [ "${EFFECTIVE_PLATFORM_NAME:-}" = "-maccatalyst" ]; then PLATFORM="ios"; VARIANT="maccatalyst"; fi ;;
+          appletvos) PLATFORM="tvos"; VARIANT="" ;;
+          appletvsimulator) PLATFORM="tvos"; VARIANT="simulator" ;;
+          watchos) PLATFORM="watchos"; VARIANT="" ;;
+          watchsimulator) PLATFORM="watchos"; VARIANT="simulator" ;;
+          xros) PLATFORM="xros"; VARIANT="" ;;
+          xrsimulator) PLATFORM="xros"; VARIANT="simulator" ;;
+          *) echo "error: Unsupported platform ${PLATFORM_NAME}" >&2; exit 1 ;;
+        esac
+
+        # Copies the matching library (and headers) of an xcframework.
+        install_xcframework() {
+          local xcframework="$1"
+          local destination="$2"
+          local plist="${xcframework}/Info.plist"
+          local count
+          count=$("$PLISTBUDDY" -c "Print :AvailableLibraries" "$plist" | grep -c "LibraryIdentifier" || true)
+          local i=0
+          while [ "$i" -lt "$count" ]; do
+            local platform variant
+            platform=$("$PLISTBUDDY" -c "Print :AvailableLibraries:$i:SupportedPlatform" "$plist")
+            variant=$("$PLISTBUDDY" -c "Print :AvailableLibraries:$i:SupportedPlatformVariant" "$plist" 2>/dev/null || true)
+            if [ "$platform" = "$PLATFORM" ] && [ "$variant" = "$VARIANT" ]; then
+              local identifier library headers
+              identifier=$("$PLISTBUDDY" -c "Print :AvailableLibraries:$i:LibraryIdentifier" "$plist")
+              library=$("$PLISTBUDDY" -c "Print :AvailableLibraries:$i:LibraryPath" "$plist")
+              headers=$("$PLISTBUDDY" -c "Print :AvailableLibraries:$i:HeadersPath" "$plist" 2>/dev/null || true)
+              mkdir -p "$destination"
+              rsync -a --delete "${xcframework}/${identifier}/${library}" "$destination/"
+              if [ -n "$headers" ]; then
+                mkdir -p "$destination/Headers"
+                rsync -a "${xcframework}/${identifier}/${headers}/" "$destination/Headers/"
+              fi
+              echo "Copied ${xcframework}/${identifier}/${library} to ${destination}"
+              return 0
+            fi
+            i=$((i + 1))
+          done
+          echo "warning: [CP] $(basename "$xcframework") has no slice for ${PLATFORM} ${VARIANT}"
+        }
+
+
+        """
+        for entry in xcframeworks {
+            script += "install_xcframework \"\(entry.path)\" \"\(entry.destination)\"\n"
+        }
+        return script
+    }
+
+    /// Copies resources and resource bundles of static library pods into the app bundle.
+    static func copyResourcesScript(resourcesByConfiguration: [(configuration: String, resources: [String])]) -> String {
+        var script = """
+        #!/bin/sh
+        set -e
+        set -u
+        set -o pipefail
+
+        if [ -z ${UNLOCALIZED_RESOURCES_FOLDER_PATH+x} ]; then
+          # Not an app bundle; nothing to copy.
+          exit 0
+        fi
+
+        mkdir -p "${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
+
+        XCASSET_FILES=()
+
+        case "${TARGETED_DEVICE_FAMILY:-}" in
+          1,2) TARGET_DEVICE_ARGS="--target-device ipad --target-device iphone" ;;
+          1) TARGET_DEVICE_ARGS="--target-device iphone" ;;
+          2) TARGET_DEVICE_ARGS="--target-device ipad" ;;
+          3) TARGET_DEVICE_ARGS="--target-device tv" ;;
+          4) TARGET_DEVICE_ARGS="--target-device watch" ;;
+          7) TARGET_DEVICE_ARGS="--target-device vision" ;;
+          *) TARGET_DEVICE_ARGS="--target-device mac" ;;
+        esac
+
+        install_resource()
+        {
+          if [[ "$1" = /* ]] ; then
+            RESOURCE_PATH="$1"
+          else
+            RESOURCE_PATH="${PODS_ROOT}/$1"
+          fi
+          if [[ ! -e "$RESOURCE_PATH" ]] ; then
+            cat << EOM
+        error: Resource "$RESOURCE_PATH" not found. Run 'swiftpods install' to update the copy resources script.
+        EOM
+            exit 1
+          fi
+          case $RESOURCE_PATH in
+            *.storyboard)
+              ibtool --reference-external-strings-file --errors --warnings --notices --minimum-deployment-target ${!DEPLOYMENT_TARGET_SETTING_NAME} --output-format human-readable-text --compile "${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/`basename \\"$RESOURCE_PATH\\" .storyboard`.storyboardc" "$RESOURCE_PATH" --sdk "${SDKROOT}" ${TARGET_DEVICE_ARGS}
+              ;;
+            *.xib)
+              ibtool --reference-external-strings-file --errors --warnings --notices --minimum-deployment-target ${!DEPLOYMENT_TARGET_SETTING_NAME} --output-format human-readable-text --compile "${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/`basename \\"$RESOURCE_PATH\\" .xib`.nib" "$RESOURCE_PATH" --sdk "${SDKROOT}" ${TARGET_DEVICE_ARGS}
+              ;;
+            *.xcdatamodeld)
+              xcrun momc "$RESOURCE_PATH" "${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/`basename \\"$RESOURCE_PATH\\" .xcdatamodeld`.momd"
+              ;;
+            *.xcassets)
+              XCASSET_FILES+=("$RESOURCE_PATH")
+              ;;
+            *)
+              rsync -av "$RESOURCE_PATH" "${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
+              ;;
+          esac
+        }
+
+
+        """
+        for (configuration, resources) in resourcesByConfiguration where !resources.isEmpty {
+            script += "if [[ \"$CONFIGURATION\" == \"\(configuration)\" ]]; then\n"
+            for resource in resources { script += "  install_resource \"\(resource)\"\n" }
+            script += "fi\n"
+        }
+        script += """
+
+        if [[ -n "${XCASSET_FILES:-}" ]]; then
+          printf "%s\\0" "${XCASSET_FILES[@]}" | xargs -0 xcrun actool --output-format human-readable-text --notices --warnings --platform "${PLATFORM_NAME}" --minimum-deployment-target "${!DEPLOYMENT_TARGET_SETTING_NAME}" ${TARGET_DEVICE_ARGS} --compress-pngs --compile "${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
+        fi
+
+        """
+        return script
+    }
+}
