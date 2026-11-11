@@ -3,6 +3,7 @@ public import Foundation
 public import PodsCore
 import PodsLockfile
 import PodsPodfile
+import PodsResolver
 import PodsSources
 import PodsSpec
 
@@ -133,7 +134,7 @@ public struct OutdatedChecker: Sendable {
     public struct Entry: Sendable, Equatable {
         public let name: String
         public let current: Version
-        /// Newest version allowed by the Podfile requirements.
+        /// The version `update` would install, or `nil` when the pod is no longer used.
         public let allowed: Version?
         /// Newest published version.
         public let latest: Version?
@@ -147,20 +148,21 @@ public struct OutdatedChecker: Sendable {
         guard FileManager.default.fileExists(atPath: context.lockfileURL.path) else {
             throw PodsError("No `Podfile.lock` found. Run `swiftpods install` first.")
         }
-        let lockfile = try Lockfile(contentsOf: context.lockfileURL)
-        let podfile = try await PodfileLoader().load(context.podfileURL)
-        let sources = context.sources ?? SourcesManager(urls: podfile.effectiveSources, cacheRoot: context.cacheRoot)
-        let roots = Dictionary(lockfile.pods.map { (Dependency.rootName(of: $0.name), $0.version) }, uniquingKeysWith: { a, _ in a })
-        let requirements = Dictionary(grouping: podfile.allDependencies.map(\.dependency), by: \.rootName)
+        // Like `pod outdated`, the allowed version is what `update` would pick: a resolution with
+        // every pod unlocked, so requirements of other pods (not only the Podfile's) are respected.
+        let analyzer = Analyzer(context: context, options: InstallOptions(update: .all, integrate: false))
+        let resolution = try await analyzer.resolveDependencies()
+        guard let lockfile = resolution.lockfile else { return [] }
+        let sources = context.sources ?? SourcesManager(urls: resolution.podfile.effectiveSources, cacheRoot: context.cacheRoot)
+        let allowedVersions = Dictionary(resolution.pods.map { ($0.name, $0.version) }, uniquingKeysWith: { a, _ in a })
+        let current = Dictionary(lockfile.pods.map { (Dependency.rootName(of: $0.name), $0.version) }, uniquingKeysWith: { a, _ in a })
 
         return try await withThrowingTaskGroup(of: Entry?.self) { group in
-            for (name, current) in roots where lockfile.externalSources[name] == nil {
+            for (name, current) in current where lockfile.externalSources[name] == nil {
+                let allowed = allowedVersions[name]
                 group.addTask {
                     let versions = try await sources.candidates(for: name).map(\.version).filter { !$0.isPreRelease || current.isPreRelease }
-                    let requirement = requirements[name]?.reduce(Requirement.any) { $0.merging($1.requirement) } ?? .any
-                    let latest = versions.max()
-                    let allowed = versions.filter(requirement.isSatisfied).max()
-                    guard let latest, latest > current else { return nil }
+                    guard let latest = versions.max(), latest > current else { return nil }
                     return Entry(name: name, current: current, allowed: allowed, latest: latest)
                 }
             }

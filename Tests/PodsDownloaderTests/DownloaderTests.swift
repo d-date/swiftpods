@@ -40,6 +40,35 @@ struct DownloaderTests {
         #expect(cached.location == result.location)
     }
 
+    @Test(arguments: [false, true])
+    func externalTagAndCommitCheckoutsAreCached(byCommit: Bool) async throws {
+        let repo = try await makeRepository()
+        let head = try await shell.run("git", ["-C", repo.path, "rev-parse", "HEAD"]).stdout.trimmingWhitespace()
+        let downloader = Downloader(cacheDirectory: root.appendingPathComponent("cache"), shell: shell, ui: .capturing())
+        let reference: ExternalSource.GitReference = byCommit ? .commit(head) : .tag("1.0.0")
+        let request = DownloadRequest(name: "X", version: nil, source: .git(url: "file://" + repo.path, reference: reference, submodules: false))
+        let result = try await downloader.download(request)
+
+        // A tag or commit pins the contents, so `pod install` must not clone again.
+        try FileManager.default.removeItem(at: repo)
+        let cached = try await downloader.download(request)
+        #expect(cached.location == result.location)
+        #expect(cached.checkoutOptions == result.checkoutOptions)
+    }
+
+    @Test func externalBranchCheckoutsAreFetchedAgain() async throws {
+        let repo = try await makeRepository()
+        let downloader = Downloader(cacheDirectory: root.appendingPathComponent("cache"), shell: shell, ui: .capturing())
+        let request = DownloadRequest(name: "X", version: nil, source: .git(url: "file://" + repo.path, reference: .branch("main"), submodules: false))
+        _ = try await downloader.download(request)
+
+        try "let y = 2\n".write(to: repo.appendingPathComponent("Sources/Y.swift"), atomically: true, encoding: .utf8)
+        try await shell.run("git", ["-C", repo.path, "add", "."])
+        try await shell.run("git", ["-C", repo.path, "commit", "--quiet", "-m", "next"])
+        let updated = try await downloader.download(request)
+        #expect(FileManager.default.fileExists(atPath: updated.location.appendingPathComponent("Sources/Y.swift").path))
+    }
+
     @Test func branchCheckoutRecordsCommit() async throws {
         let repo = try await makeRepository()
         let head = try await shell.run("git", ["-C", repo.path, "rev-parse", "HEAD"]).stdout.trimmingWhitespace()

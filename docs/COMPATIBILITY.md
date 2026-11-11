@@ -80,5 +80,10 @@ Legend: ✅ supported · ⚠️ partial · ❌ not supported
   install over a CocoaPods-generated project rewrites `Pods.xcodeproj` entirely.
 * `ENABLE_USER_SCRIPT_SANDBOXING = NO` is set in the aggregate xcconfig, because the `[CP]`
   scripts read files that are not declared as inputs.
+* `outdated` reports, like `pod outdated`, the version `update` would install (a resolution with
+  every pod unlocked, so requirements between pods are respected) and `(unused)` for pods that
+  would be removed.
+* `:git` checkouts pinned by `:tag` or `:commit` are cached like released pods and are not
+  cloned again on every install; `:branch` checkouts are locked to a commit after the first install.
 * `pod lib lint` / `pod trunk push` / `pod spec create` are not implemented; `spec lint` performs
   static checks only.

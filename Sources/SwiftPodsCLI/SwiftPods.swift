@@ -109,7 +109,7 @@ struct Outdated: AsyncParsableCommand {
             }
             ui.message("The following pod updates are available:")
             for entry in entries {
-                ui.message("- \(entry.name) \(entry.current) -> \(entry.allowed.map(\.rawValue) ?? "(unchanged)") (latest version \(entry.latest.map(\.rawValue) ?? "?"))")
+                ui.message("- \(entry.name) \(entry.current) -> \(entry.allowed.map(\.rawValue) ?? "(unused)") (latest version \(entry.latest.map(\.rawValue) ?? "?"))")
             }
         }
     }

@@ -85,8 +85,8 @@ public actor Downloader {
         }
         let destination = cacheDirectory.appendingPathComponent(key, isDirectory: true)
         let marker = destination.appendingPathComponent(".swiftpods-complete")
-        // Released pods are immutable, so a complete cache entry can be reused.
-        if request.version != nil, fileManager.fileExists(atPath: marker.path),
+        // Released pods and tag/commit checkouts are immutable, so a complete cache entry can be reused.
+        if request.isImmutable, fileManager.fileExists(atPath: marker.path),
            let data = fileManager.contents(atPath: marker.path),
            let options = try? JSONSerialization.jsonObject(with: data) as? [String: String] {
             ui.verbose("Using cached \(request.name)")
@@ -204,5 +204,18 @@ public actor Downloader {
         if lower.hasSuffix(".tar.xz") || lower.hasSuffix(".txz") { return "txz" }
         if lower.hasSuffix(".tar") { return "tar" }
         return nil
+    }
+}
+
+extension DownloadRequest {
+    /// Whether the downloaded contents can never change: released versions and git tags/commits.
+    /// Branch checkouts and unversioned archives are fetched again.
+    var isImmutable: Bool {
+        if version != nil { return true }
+        guard case .git(_, let reference, _) = source else { return false }
+        switch reference {
+        case .tag, .commit: return true
+        default: return false
+        }
     }
 }

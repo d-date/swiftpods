@@ -76,7 +76,54 @@ struct Analyzer {
     let context: InstallerContext
     let options: InstallOptions
 
+    /// The resolved dependency graph, before anything is downloaded.
+    struct Resolution: Sendable {
+        let podfile: Podfile
+        let lockfile: Lockfile?
+        let userProjects: [URL: UserProjectInfo]
+        let targetPlatforms: [String: Platform]
+        let externals: [String: FetchedExternal]
+        let pods: [ResolvedPod]
+        let downloader: Downloader
+    }
+
     func analyze() async throws -> Analysis {
+        let resolution = try await resolveDependencies()
+        let ui = context.ui
+        let externals = resolution.externals
+        let resolved = resolution.pods
+        let downloader = resolution.downloader
+
+        // Download released pods in parallel.
+        var requests: [DownloadRequest] = []
+        for pod in resolved where externals[pod.name] == nil || externals[pod.name]?.needsDownload == true {
+            guard let source = pod.spec.source else { throw PodsError("`\(pod.name)` has no `source`.") }
+            requests.append(DownloadRequest(name: pod.name, version: pod.version, source: source, prepareCommand: pod.spec.prepareCommand))
+        }
+        let downloads = try await ui.section("Downloading dependencies") {
+            try await downloader.download(requests)
+        }
+
+        var pods: [InstalledPod] = []
+        for pod in resolved {
+            let external = externals[pod.name]
+            if let external, !external.needsDownload {
+                pods.append(InstalledPod(spec: pod.spec, activatedSpecs: pod.activatedSpecs, sourceName: nil, externalSource: external.source,
+                                         location: external.location, isLocal: external.isLocal, checkoutOptions: external.checkoutOptions))
+            } else {
+                guard let download = downloads[pod.name] else { throw PodsError("`\(pod.name)` was not downloaded.") }
+                pods.append(InstalledPod(spec: pod.spec, activatedSpecs: pod.activatedSpecs, sourceName: external == nil ? pod.source?.lockfileName : nil,
+                                         externalSource: external?.source, location: download.location, isLocal: false,
+                                         checkoutOptions: external?.checkoutOptions ?? [:]))
+            }
+            ui.message("Installing \(pod.name) (\(pod.version))", style: .success)
+        }
+        return Analysis(podfile: resolution.podfile, lockfile: resolution.lockfile, pods: pods,
+                        userProjects: resolution.userProjects, targetPlatforms: resolution.targetPlatforms)
+    }
+
+    /// Loads the Podfile, fetches external sources and resolves versions.
+    func resolveDependencies() async throws -> Resolution {
         let ui = context.ui
         let podfile = try await PodfileLoader(swiftEvaluator: .init(cacheDirectory: context.cacheRoot.appendingPathComponent("Manifests"))).load(context.podfileURL)
         for hook in podfile.unsupportedHooks {
@@ -133,32 +180,8 @@ struct Analyzer {
             try await Resolver(sources: sources, externalSpecs: externals.mapValues(\.spec), lockedVersions: locked, unlockedPods: unlocked)
                 .resolve(roots)
         }
-
-        // Download released pods in parallel.
-        var requests: [DownloadRequest] = []
-        for pod in resolved where externals[pod.name] == nil || externals[pod.name]?.needsDownload == true {
-            guard let source = pod.spec.source else { throw PodsError("`\(pod.name)` has no `source`.") }
-            requests.append(DownloadRequest(name: pod.name, version: pod.version, source: source, prepareCommand: pod.spec.prepareCommand))
-        }
-        let downloads = try await ui.section("Downloading dependencies") {
-            try await downloader.download(requests)
-        }
-
-        var pods: [InstalledPod] = []
-        for pod in resolved {
-            let external = externals[pod.name]
-            if let external, !external.needsDownload {
-                pods.append(InstalledPod(spec: pod.spec, activatedSpecs: pod.activatedSpecs, sourceName: nil, externalSource: external.source,
-                                         location: external.location, isLocal: external.isLocal, checkoutOptions: external.checkoutOptions))
-            } else {
-                guard let download = downloads[pod.name] else { throw PodsError("`\(pod.name)` was not downloaded.") }
-                pods.append(InstalledPod(spec: pod.spec, activatedSpecs: pod.activatedSpecs, sourceName: external == nil ? pod.source?.lockfileName : nil,
-                                         externalSource: external?.source, location: download.location, isLocal: false,
-                                         checkoutOptions: external?.checkoutOptions ?? [:]))
-            }
-            ui.message("Installing \(pod.name) (\(pod.version))", style: .success)
-        }
-        return Analysis(podfile: podfile, lockfile: lockfile, pods: pods, userProjects: userProjects, targetPlatforms: platforms)
+        return Resolution(podfile: podfile, lockfile: lockfile, userProjects: userProjects, targetPlatforms: platforms,
+                          externals: externals, pods: resolved, downloader: downloader)
     }
 
     static func projectURL(for target: ResolvedTarget, projectDirectory: URL) throws -> URL {
