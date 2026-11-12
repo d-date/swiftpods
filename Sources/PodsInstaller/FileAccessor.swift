@@ -91,7 +91,9 @@ struct FileAccessor: Sendable {
             return items.filter { seen.insert($0).inserted }
         }
 
-        var publicPatterns: [String] = []
+        // CocoaPods has one file accessor per spec: `public_header_files` only restricts the
+        // headers of the spec that declares (or inherits) it.
+        var publicHeaderSet = Set<String>()
         var privateHeaderSet = Set<String>()
         var projectHeaderSet = Set<String>()
         for spec in specs {
@@ -99,7 +101,12 @@ struct FileAccessor: Sendable {
             let excluded = Set(match(consumer.excludeFiles, extensions: Self.sourceExtensions))
             let sources = match(consumer.sourceFiles, extensions: Self.sourceExtensions).filter { !excluded.contains($0) }
             sourceFiles += sources
-            publicPatterns += consumer.publicHeaderFiles
+            let specHeaders = sources.filter { Self.headerExtensions.contains($0.pathExtension) }
+            if consumer.publicHeaderFiles.isEmpty {
+                publicHeaderSet.formUnion(specHeaders)
+            } else {
+                publicHeaderSet.formUnion(Set(match(consumer.publicHeaderFiles)).intersection(specHeaders))
+            }
             privateHeaderSet.formUnion(match(consumer.privateHeaderFiles))
             projectHeaderSet.formUnion(match(consumer.projectHeaderFiles))
             resources += match(consumer.resources, extensions: nil).filter { !excluded.contains($0) }
@@ -128,17 +135,14 @@ struct FileAccessor: Sendable {
         preservePaths = unique(preservePaths)
 
         let allHeaders = headers
-        let explicitPublic = publicPatterns.isEmpty ? nil : Set(match(publicPatterns))
         privateHeaders = allHeaders.filter { privateHeaderSet.contains($0) }
         projectHeaders = allHeaders.filter { projectHeaderSet.contains($0) && !privateHeaderSet.contains($0) }
         publicHeaders = allHeaders.filter { header in
             if privateHeaderSet.contains(header) || projectHeaderSet.contains(header) { return false }
-            return explicitPublic?.contains(header) ?? true
+            return publicHeaderSet.contains(header)
         }
-        if explicitPublic != nil {
-            // Headers that are neither explicitly public nor private are project headers.
-            projectHeaders += allHeaders.filter { !publicHeaders.contains($0) && !privateHeaders.contains($0) && !projectHeaders.contains($0) }
-        }
+        // Headers that are neither public nor private are project headers.
+        projectHeaders += allHeaders.filter { !publicHeaders.contains($0) && !privateHeaders.contains($0) && !projectHeaders.contains($0) }
         if moduleMap == nil {
             let directories = Set(publicHeaders.map { $0.deletingLastPathComponent })
             shippedModuleMap = directories.sorted()

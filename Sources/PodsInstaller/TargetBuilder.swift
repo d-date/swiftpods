@@ -88,14 +88,15 @@ struct TargetBuilder {
             let searchPathNames = target.searchPathsTargets.flatMap { label in
                 aggregateRoots[label]?.compactMap { podTargets[$0]?.name } ?? []
             }
-            let projectURL = try Analyzer.projectURL(for: target, projectDirectory: projectDirectory)
-            let info = analysis.userProjects[projectURL]
+            let projectURL = analysis.targetProjects[target.name]
+            let info = projectURL.flatMap { analysis.userProjects[$0] }
             aggregates.append(AggregateTarget(
                 definition: target,
                 platform: analysis.targetPlatforms[target.name]!,
                 podTargetNames: names,
                 searchPathPodTargetNames: searchPathNames.filter { !names.contains($0) },
                 userProject: projectURL,
+                clientRoot: projectURL?.deletingLastPathComponent() ?? projectDirectory,
                 buildConfigurations: info?.configurations ?? ["Debug", "Release"],
                 buildType: BuildType(target.usesFrameworks)
             ))

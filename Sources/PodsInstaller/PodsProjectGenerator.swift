@@ -336,7 +336,7 @@ struct PodsProjectGenerator {
         podTargets: [String: PBXTarget], bundleTargets: [String: [PBXNativeTarget]]
     ) throws {
         let label = aggregate.label
-        let userDirectory = aggregate.userProject.deletingLastPathComponent()
+        let userDirectory = aggregate.clientRoot
         for configuration in configurations {
             let config = xcconfigs.aggregateConfig(aggregate, configuration: configuration.name, userProjectDirectory: userDirectory)
             let file = supportFile(label, "\(label).\(configuration.name.lowercased()).xcconfig")

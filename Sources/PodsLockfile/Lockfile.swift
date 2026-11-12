@@ -191,24 +191,43 @@ enum YAMLWriter {
 
     static func sortedKeys<V>(_ dictionary: [String: V]) -> [String] { sorted(Array(dictionary.keys)) }
 
-    /// Quotes a string when YAML would otherwise read it as something else.
+    /// Quotes a string like CocoaPods' `YAMLHelper.process_string`: single quotes for scalars YAML
+    /// would resolve to another type, double quotes (Ruby `inspect`) for anything that isn't a
+    /// valid plain scalar.
     static func scalar(_ string: String) -> String {
-        needsQuotes(string) ? quoted(string) : string
+        // `Regex` isn't `Sendable`, so it can't be a static constant; lockfiles are small.
+        let resolvedTag = try! Regex(resolvedTagPattern)
+        let validPlainScalar = try! Regex(validPlainScalarPattern)
+        // The empty string is one of the resolved tags (null).
+        if string.isEmpty || (try? resolvedTag.wholeMatch(in: string)) != nil { return "'\(string)'" }
+        if string.allSatisfy(\.isWhitespace) || string.first.map(indicatorStartCharacters.contains) == true || string.hasSuffix(":") {
+            return quoted(string)
+        }
+        if (try? validPlainScalar.wholeMatch(in: string)) != nil { return string }
+        return quoted(string)
     }
 
-    static func needsQuotes(_ string: String) -> Bool {
-        if string.trimmingWhitespace().isEmpty { return true }
-        if string != string.trimmingWhitespace() { return true }
-        let reserved: Set<String> = ["true", "false", "yes", "no", "on", "off", "null", "~", "y", "n"]
-        if reserved.contains(string.lowercased()) { return true }
-        // Integers and floats (`1`, `1.0`, `.5`) would be read as numbers.
-        if string.range(of: #"^[-+]?(\d+|\d*\.\d+)([eE][-+]?\d+)?$"#, options: .regularExpression) != nil { return true }
-        if let first = string.unicodeScalars.first,
-           !(CharacterSet.alphanumerics.contains(first) || first == "_" || first == "(" || first == "/") {
-            return true
-        }
-        return string.contains(": ") || string.contains(" #") || string.hasSuffix(":")
-    }
+    private static let indicatorStartCharacters: Set<Character> = ["-", "?", ":", ",", "[", "]", "{", "}", "#", "&", "*", "!", "|", ">", "'", "\"", "%", "@", "`"]
+
+    /// `RESOLVED_TAGS`: null, booleans, yes/no, on/off, timestamps, integers, floats, infinity and NaN.
+    private static let resolvedTagPattern = #"""
+        (?x)
+        null|Null|NULL|~|
+        true|True|TRUE|false|False|FALSE|
+        yes|Yes|YES|no|No|NO|
+        on|On|ON|off|Off|OFF|
+        [0-9]{4}-[0-9]{2}-[0-9]{2}|
+        [0-9]{4}-[0-9][0-9]?-[0-9][0-9]?(?:[Tt]|[\ \t]+)[0-9][0-9]?:[0-9]{2}:[0-9]{2}(?:\.[0-9]*)?(?:[\ \t]*(?:Z|[-+][0-9][0-9]?(?::[0-9]{2})?))?|
+        [-+]?[0-9]+|
+        00[0-7]+|
+        0x[0-9a-fA-F]+|
+        [-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)(?:[eE][-+]?[0-9]+)?|
+        [-+]?\.(?:inf|Inf|INF)|
+        \.(?:nan|NaN|NAN)
+        """#
+
+    /// `VALID_PLAIN_SCALAR_STRING` (Ruby's `\w` is ASCII-only).
+    private static let validPlainScalarPattern = #"[A-Za-z0-9_][A-Za-z0-9_/ ()~<>=.:`,\-]*"#
 
     static func quoted(_ string: String) -> String {
         var result = "\""

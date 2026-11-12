@@ -34,10 +34,11 @@ public struct Installer: Sendable {
         }
         sandbox.removeUnused(keeping: Set(pods.filter { !$0.isLocal }.map(\.name)))
         let installedAnalysis = Analysis(podfile: analysis.podfile, lockfile: analysis.lockfile, pods: pods,
-                                         userProjects: analysis.userProjects, targetPlatforms: analysis.targetPlatforms)
+                                         userProjects: analysis.userProjects, targetProjects: analysis.targetProjects,
+                                         targetPlatforms: analysis.targetPlatforms)
 
         let plan = try TargetBuilder(analysis: installedAnalysis, podfileURL: context.podfileURL, projectDirectory: context.projectDirectory).build()
-        let lockfile = makeLockfile(plan: plan)
+        let lockfile = makeLockfile(plan: plan, previous: analysis.lockfile)
         if options.deployment, let previous = analysis.lockfile, previous != lockfile {
             throw PodsError("There were changes to the lockfile in deployment mode. Run `swiftpods install` and commit Podfile.lock.")
         }
@@ -60,7 +61,9 @@ public struct Installer: Sendable {
 
     // MARK: - Lockfile
 
-    func makeLockfile(plan: InstallationPlan) -> Lockfile {
+    /// `previous` is the lockfile being replaced; its `COCOAPODS:` version is kept so that teams
+    /// mixing CocoaPods and swiftpods don't see that line change on every install.
+    func makeLockfile(plan: InstallationPlan, previous: Lockfile?) -> Lockfile {
         var lockPods: [Lockfile.Pod] = []
         var specRepos: [String: [String]] = [:]
         var externalSources: [String: [String: String]] = [:]
@@ -97,7 +100,8 @@ public struct Installer: Sendable {
             externalSources: externalSources,
             checkoutOptions: checkoutOptions,
             specChecksums: checksums,
-            podfileChecksum: Insecure.SHA1.hash(data: podfileData).map { String(format: "%02x", $0) }.joined()
+            podfileChecksum: Insecure.SHA1.hash(data: podfileData).map { String(format: "%02x", $0) }.joined(),
+            cocoapodsVersion: previous?.cocoapodsVersion ?? Lockfile.compatibleCocoaPodsVersion
         )
     }
 }

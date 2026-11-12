@@ -17,7 +17,11 @@ struct UserProjectIntegrator {
     let ui: UI
 
     func integrate() throws {
-        let byProject = Dictionary(grouping: plan.aggregateTargets, by: \.userProject)
+        var byProject: [URL: [AggregateTarget]] = [:]
+        for aggregate in plan.aggregateTargets {
+            guard let project = aggregate.userProject else { continue }
+            byProject[project, default: []].append(aggregate)
+        }
         for (projectURL, aggregates) in byProject.sorted(by: { $0.key.path < $1.key.path }) {
             try integrate(projectURL: projectURL, aggregates: aggregates)
         }

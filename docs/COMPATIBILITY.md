@@ -16,7 +16,7 @@ Legend: ✅ supported · ⚠️ partial · ❌ not supported
 | `*.podspec` (Ruby DSL) | ✅ | |
 | `*.podspec.json` | ✅ | Canonical format |
 | `*.podspec.swift` | ✅ | SwiftPods extension; `spec json` converts it for trunk |
-| `Podfile.lock` / `Pods/Manifest.lock` | ✅ | Byte-identical output, including `SPEC CHECKSUMS` |
+| `Podfile.lock` / `Pods/Manifest.lock` | ✅ | Byte-identical output, including `SPEC CHECKSUMS`; the `COCOAPODS:` version of an existing lockfile is kept |
 
 ## Podfile DSL
 
@@ -34,7 +34,7 @@ Legend: ✅ supported · ⚠️ partial · ❌ not supported
 | `inhibit_all_warnings!` | ✅ | |
 | `project` (with build configuration mapping) | ✅ | |
 | `workspace` | ✅ | |
-| `install! 'cocoapods', integrate_targets: false` | ✅ | Other installation options are accepted and ignored |
+| `install! 'cocoapods', integrate_targets: false` | ✅ | No user project is needed; the Podfile must specify `platform`. Other installation options are accepted and ignored |
 | `pre_install`, `post_install`, `pre_integrate`, `post_integrate` | ❌ | Reported as warnings; Ruby code cannot run |
 | `plugin` | ❌ | Reported as warnings |
 | `podspec` directive | ⚠️ | Recorded as a `:path` dependency |

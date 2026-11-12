@@ -73,6 +73,8 @@ struct RequirementTests {
     @Test func lockfileDescription() throws {
         #expect(try Requirement(parsing: "~> 5.0").lockfileDescription == "(~> 5.0)")
         #expect(Requirement.any.lockfileDescription == "")
+        // CocoaPods' vendored `Gem::Requirement#as_list` sorts the operator strings.
+        #expect(try Requirement(parsing: ">= 4.2.1, < 5.0").lockfileDescription == "(< 5.0, >= 4.2.1)")
     }
 }
 

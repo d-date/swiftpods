@@ -94,6 +94,17 @@ struct InstallerTests {
         #expect(try String(contentsOf: root.appendingPathComponent("Pods/Pods.xcodeproj/project.pbxproj"), encoding: .utf8) == firstPods)
     }
 
+    /// Switching between CocoaPods and swiftpods must not churn the `COCOAPODS:` line.
+    @Test func keepsCocoaPodsVersionOfExistingLockfile() async throws {
+        try await install()
+        let lockfileURL = root.appendingPathComponent("Podfile.lock")
+        let written = try String(contentsOf: lockfileURL, encoding: .utf8)
+        try written.replacingOccurrences(of: "COCOAPODS: \(Lockfile.compatibleCocoaPodsVersion)", with: "COCOAPODS: 1.17.0")
+            .write(to: lockfileURL, atomically: true, encoding: .utf8)
+        try await install()
+        #expect(try String(contentsOf: lockfileURL, encoding: .utf8).hasSuffix("COCOAPODS: 1.17.0\n"))
+    }
+
     @Test func frameworksModeEmbedsFrameworks() async throws {
         let podfile = root.appendingPathComponent("Podfile")
         try (try String(contentsOf: podfile, encoding: .utf8)).replacingOccurrences(of: "platform :ios, '16.0'", with: "platform :ios, '16.0'\nuse_frameworks!")
@@ -121,6 +132,49 @@ struct InstallerTests {
     }
 
     /// Builds the integrated workspace with xcodebuild. Slow, so opt-in: `SWIFTPODS_XCODEBUILD=1 swift test`.
+    /// Repositories that only build `Pods.xcodeproj` (e.g. to repackage pods) have no user project.
+    @Test func installsWithoutUserProjectWhenNotIntegrating() async throws {
+        let directory = root.appendingPathComponent("NoProject")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: root.appendingPathComponent("LocalPods"), to: directory.appendingPathComponent("LocalPods"))
+        try """
+        platform :ios, '15.5'
+        install! 'cocoapods', integrate_targets: false
+
+        target 'MLKit' do
+          use_frameworks! :linkage => :static
+          pod 'Greeter', :path => 'LocalPods/Greeter'
+          pod 'Decorator', :path => 'LocalPods/Decorator'
+        end
+        """.write(to: directory.appendingPathComponent("Podfile"), atomically: true, encoding: .utf8)
+
+        let context = try InstallerContext(projectDirectory: directory, cacheRoot: cache, ui: .capturing(), sources: SourcesManager(sources: []))
+        let plan = try await Installer(context: context).install()
+
+        #expect(plan.aggregateTargets.map(\.label) == ["Pods-MLKit"])
+        #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("Pods/Pods.xcodeproj").path))
+        #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("Podfile.lock").path))
+        // Without a user project, paths are relative to the Podfile's directory (CocoaPods' client root).
+        let xcconfig = try String(contentsOf: directory.appendingPathComponent("Pods/Target Support Files/Pods-MLKit/Pods-MLKit.release.xcconfig"), encoding: .utf8)
+        #expect(xcconfig.contains("PODS_ROOT = ${SRCROOT}/Pods"))
+    }
+
+    @Test func requiresPlatformWhenNotIntegrating() async throws {
+        let directory = root.appendingPathComponent("NoPlatform")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: root.appendingPathComponent("LocalPods"), to: directory.appendingPathComponent("LocalPods"))
+        try """
+        install! 'cocoapods', integrate_targets: false
+        target 'MLKit' do
+          pod 'Greeter', :path => 'LocalPods/Greeter'
+        end
+        """.write(to: directory.appendingPathComponent("Podfile"), atomically: true, encoding: .utf8)
+
+        let context = try InstallerContext(projectDirectory: directory, cacheRoot: cache, ui: .capturing(), sources: SourcesManager(sources: []))
+        let error = await #expect(throws: PodsError.self) { try await Installer(context: context).install() }
+        #expect(error?.description.contains("It is necessary to specify the platform in the Podfile if not integrating.") == true)
+    }
+
     @Test(.enabled(if: ProcessInfo.processInfo.environment["SWIFTPODS_XCODEBUILD"] == "1"), arguments: [false, true])
     func integratedWorkspaceBuilds(useFrameworks: Bool) async throws {
         if useFrameworks {

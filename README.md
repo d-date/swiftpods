@@ -139,6 +139,8 @@ See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for what is supported. Verifi
 (install → `xcodebuild` → launch on the simulator) with, among others: Alamofire, SnapKit,
 SDWebImage, Kingfisher, Moya, and FirebaseAnalytics (vendored xcframeworks, mixed
 Swift/Objective-C static libraries), both as static libraries and with `use_frameworks!`.
+The full Google ML Kit pod set (39 pods, `integrate_targets: false`) produces a `Podfile.lock`
+identical to CocoaPods 1.17 and a `Pods.xcodeproj` that builds for device and simulator.
 
 ## Documentation
 

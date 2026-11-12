@@ -76,6 +76,26 @@ struct LockfileTests {
         )
         let yaml = lockfile.yaml
         #expect(yaml.hasPrefix("PODS:\n  - abseil (1)\n  - Alamofire (5)\n  - zlib (1)\n"))
-        #expect(yaml.contains("    :path: \"./X\"\n    :tag: \"1.10\""))
+        #expect(yaml.contains("    :path: \"./X\"\n    :tag: '1.10'"))
+    }
+
+    /// Cases follow CocoaPods' `YAMLHelper.process_string`.
+    @Test(arguments: [
+        ("Alamofire (5.9.1)", "Alamofire (5.9.1)"),
+        ("GoogleToolboxForMac/NSData+zlib (4.2.1)", "\"GoogleToolboxForMac/NSData+zlib (4.2.1)\""),
+        ("GTMSessionFetcher/Core (< 4.0, >= 3.3.2)", "GTMSessionFetcher/Core (< 4.0, >= 3.3.2)"),
+        ("https://github.com/SnapKit/SnapKit.git", "https://github.com/SnapKit/SnapKit.git"),
+        ("5.7.1", "5.7.1"),
+        ("1.10", "'1.10'"),
+        ("true", "'true'"),
+        ("", "''"),
+        ("./X", "\"./X\""),
+        ("-flag", "\"-flag\""),
+        ("key:", "\"key:\""),
+        ("a#b", "\"a#b\""),
+        ("Name With Spaces", "Name With Spaces"),
+    ])
+    func quotesScalarsLikeCocoaPods(input: String, expected: String) {
+        #expect(YAMLWriter.scalar(input) == expected)
     }
 }

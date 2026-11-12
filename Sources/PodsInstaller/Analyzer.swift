@@ -67,6 +67,8 @@ struct Analysis: Sendable {
     let lockfile: Lockfile?
     let pods: [InstalledPod]
     let userProjects: [URL: UserProjectInfo]
+    /// The user project of every non-abstract target; empty when targets aren't integrated.
+    let targetProjects: [String: URL]
     /// Platform of every non-abstract target.
     let targetPlatforms: [String: Platform]
 }
@@ -81,6 +83,7 @@ struct Analyzer {
         let podfile: Podfile
         let lockfile: Lockfile?
         let userProjects: [URL: UserProjectInfo]
+        let targetProjects: [String: URL]
         let targetPlatforms: [String: Platform]
         let externals: [String: FetchedExternal]
         let pods: [ResolvedPod]
@@ -119,7 +122,8 @@ struct Analyzer {
             ui.message("Installing \(pod.name) (\(pod.version))", style: .success)
         }
         return Analysis(podfile: resolution.podfile, lockfile: resolution.lockfile, pods: pods,
-                        userProjects: resolution.userProjects, targetPlatforms: resolution.targetPlatforms)
+                        userProjects: resolution.userProjects, targetProjects: resolution.targetProjects,
+                        targetPlatforms: resolution.targetPlatforms)
     }
 
     /// Loads the Podfile, fetches external sources and resolves versions.
@@ -134,11 +138,22 @@ struct Analyzer {
         }
         let lockfile = FileManager.default.fileExists(atPath: context.lockfileURL.path) ? try Lockfile(contentsOf: context.lockfileURL) : nil
 
-        // User projects and target platforms.
+        // User projects and target platforms. Like CocoaPods, user projects are only inspected
+        // when they will be integrated; otherwise the Podfile must name the platform.
+        let integrating = options.integrate && podfile.installationOption("integrate_targets") != false
         var userProjects: [URL: UserProjectInfo] = [:]
+        var targetProjects: [String: URL] = [:]
         var platforms: [String: Platform] = [:]
         for target in podfile.resolvedTargets {
+            guard integrating else {
+                guard let platform = target.platform else {
+                    throw PodsError("It is necessary to specify the platform in the Podfile if not integrating.")
+                }
+                platforms[target.name] = Platform(platform.name, platform.deploymentTarget)
+                continue
+            }
             let projectURL = try Self.projectURL(for: target, projectDirectory: context.projectDirectory)
+            targetProjects[target.name] = projectURL
             if userProjects[projectURL] == nil { userProjects[projectURL] = try UserProjectInfo(url: projectURL) }
             let info = userProjects[projectURL]!
             if let platform = target.platform {
@@ -180,7 +195,7 @@ struct Analyzer {
             try await Resolver(sources: sources, externalSpecs: externals.mapValues(\.spec), lockedVersions: locked, unlockedPods: unlocked)
                 .resolve(roots)
         }
-        return Resolution(podfile: podfile, lockfile: lockfile, userProjects: userProjects, targetPlatforms: platforms,
+        return Resolution(podfile: podfile, lockfile: lockfile, userProjects: userProjects, targetProjects: targetProjects, targetPlatforms: platforms,
                           externals: externals, pods: resolved, downloader: downloader)
     }
 

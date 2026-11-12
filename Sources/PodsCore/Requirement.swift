@@ -111,7 +111,8 @@ public struct Requirement: Sendable, Hashable, CustomStringConvertible {
     }
 
     /// The representation used in Podfile.lock (`(~> 1.0)`), empty when unconstrained.
+    /// Constraints are sorted as strings, like CocoaPods' vendored `Gem::Requirement#as_list`.
     public var lockfileDescription: String {
-        constraints.isEmpty ? "" : "(\(description))"
+        constraints.isEmpty ? "" : "(\(constraints.map(\.description).sorted().joined(separator: ", ")))"
     }
 }

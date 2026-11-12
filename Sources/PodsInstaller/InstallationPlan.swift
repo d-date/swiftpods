@@ -74,8 +74,10 @@ public struct AggregateTarget: Sendable {
     public let podTargetNames: [String]
     /// Pod targets visible only through search paths (`inherit! :search_paths`).
     public let searchPathPodTargetNames: [String]
-    /// The user project and the names of its build configurations.
-    public let userProject: URL
+    /// The user project (`nil` when targets aren't integrated) and the names of its build configurations.
+    public let userProject: URL?
+    /// The directory build settings are relative to: the user project's, or the Podfile's.
+    public let clientRoot: URL
     public let buildConfigurations: [String]
     public let buildType: BuildType
 
