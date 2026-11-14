@@ -87,6 +87,20 @@ struct PodfileTests {
         }
     }
 
+    @Test func rejectsDuplicatePackageIdentities() throws {
+        // Both URLs have the SwiftPM identity `promises`.
+        let json = try JSON(parsing: """
+        {"swift_packages":[{"url":"https://github.com/google/promises.git","requirement":["~> 2.4"]},
+        {"url":"https://example.com/mirror/Promises","requirement":["~> 2.4"]}],
+        "target_definitions":[{"name":"Pods","abstract":true,"children":[{"name":"App"}]}]}
+        """)
+        #expect {
+            _ = try Podfile(json: json)
+        } throws: { error in
+            (error as? Podfile.FormatError)?.message.contains("`promises`") == true
+        }
+    }
+
     @Test func podfileJSONFromCocoaPods() throws {
         // Output of `pod ipc podfile-json` for a small Podfile.
         let json = try JSON(parsing: """

@@ -91,11 +91,17 @@ extension Podfile {
         for entry in json?.array ?? [] {
             guard let url = entry["url"]?.string else { throw FormatError(message: "swift package without a `url`") }
             let constraints = entry["requirement"]?.stringList ?? []
+            let package: SwiftPackageDependency
             do {
-                result.append(SwiftPackageDependency(url: url, requirement: try Requirement(parsing: constraints)))
+                package = SwiftPackageDependency(url: url, requirement: try Requirement(parsing: constraints))
             } catch {
                 throw FormatError(message: "invalid requirement for package `\(url)`: \(constraints.joined(separator: ", "))")
             }
+            // SwiftPM identifies packages by identity, so two URLs with the same one would be the same package.
+            guard !result.contains(where: { $0.identity == package.identity }) else {
+                throw FormatError(message: "several Swift packages have the identity `\(package.identity)`")
+            }
+            result.append(package)
         }
         return result
     }
