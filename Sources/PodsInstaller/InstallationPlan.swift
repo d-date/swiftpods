@@ -105,8 +105,9 @@ public struct InstallationPlan: Sendable {
     public let pods: [InstalledPod]
     public let podTargets: [PodTarget]
     public let aggregateTargets: [AggregateTarget]
-    /// Package references of `Pods.xcodeproj`: the declared and the unified packages, with the ranges of the final resolution.
-    public let swiftPackages: [(url: String, lowerBound: Version, upperBound: Version)]
+    /// Package references of `Pods.xcodeproj`: the declared and the unified packages, with the ranges of the final
+    /// resolution (recorded in Podfile.lock) and the version it pinned (the exact requirement of the reference).
+    public let swiftPackages: [(url: String, lowerBound: Version, upperBound: Version, version: Version)]
 
     public func podTarget(named name: String) -> PodTarget? { podTargets.first { $0.name == name } }
 }

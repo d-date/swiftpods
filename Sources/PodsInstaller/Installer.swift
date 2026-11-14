@@ -107,7 +107,7 @@ public struct Installer: Sendable {
             }
             if let checksum = pod.spec.checksum { checksums[pod.name] = checksum }
         }
-        // Every pin of the final resolution, with the range of its package reference (none for indirect packages).
+        // Every pin of the final resolution, with the range it was resolved in (none for indirect packages).
         let lockPackages = (swiftPackages?.pins ?? []).map { pin -> Lockfile.SwiftPackage in
             let url = plan.podfile.swiftPackages.first { $0.identity == pin.identity }?.url ?? pin.url
             let requirement = plan.swiftPackages.first { $0.url == url }.map { reference in

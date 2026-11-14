@@ -89,18 +89,26 @@ SwiftPods extension, only in `Podfile.swift` (and `Podfile.json` with `swift_pac
   that satisfies every requirement on the pod; SwiftPM resolves again within that range and the
   chosen version and revision are checked. No such version is an error that lists the requirements.
 * `Pods.xcodeproj` gets an `XCRemoteSwiftPackageReference` for every declared or unified package,
-  with the range of that final resolution. Pod targets that depend on a unified pod get the package's
-  products as dependencies (headers and modules only); the `Pods-<Target>` target links them, so
-  each library is linked exactly once. Products named with `.product(name:package:)` are linked
-  through `Pods-<Target>` too.
+  pinned to the exact version of that final resolution. Pod targets that depend on a unified pod get
+  the package's products as dependencies (headers and modules only); the `Pods-<Target>` target links
+  them, so each library is linked exactly once. Products named with `.product(name:package:)` are
+  linked through `Pods-<Target>` too.
+* Package products are linked in every build configuration: a pod's `:configurations` does not
+  apply to the Swift package products that replace it or that it uses.
+* Unified Swift packages are not supported yet with dynamic frameworks (`use_frameworks!` without
+  `:linkage => :static`): a pod built as a dynamic framework that depends on a unified pod is an
+  error. Static frameworks and static libraries work.
 * The pins are written to `Pods/Pods.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`
-  and kept by `install` (only `update` moves them). The user project, the user's `Package.swift`
-  and `App.xcworkspace/xcshareddata/swiftpm/Package.resolved` are never written to. Xcode,
-  however, resolves packages again for the workspace and keeps its own `Package.resolved` there;
-  it picks within the same range, but may pick a newer allowed version than the one in `Podfile.lock`.
-* `Podfile.lock` gets a `SWIFT PACKAGES:` section with every pin: URL, requirement (the package
-  reference's range), version, revision and the unified pods. Unified pods are not listed under
-  `PODS`, `SPEC REPOS` or `SPEC CHECKSUMS`; `DEPENDENCIES` keeps the Podfile's dependencies.
+  and kept by `install`; `swiftpods update` resolves again and moves them (and the exact versions of
+  the package references). The user project, the user's `Package.swift` and
+  `App.xcworkspace/xcshareddata/swiftpm/Package.resolved` are never written to. Xcode resolves
+  packages again for the workspace and keeps its own `Package.resolved` there, which is why the
+  references use exact versions: the workspace gets the same versions as `Podfile.lock`.
+* `Podfile.lock` gets a `SWIFT PACKAGES:` section with every pin: URL, requirement, version,
+  revision and the unified pods. The requirement is the range the final resolution used (the
+  declared requirement as a range, narrowed for unified packages); it is empty for indirect packages
+  that no pod is unified with, since they have no package reference. Unified pods are not listed
+  under `PODS`, `SPEC REPOS` or `SPEC CHECKSUMS`; `DEPENDENCIES` keeps the Podfile's dependencies.
 
 ## Behavioural differences
 

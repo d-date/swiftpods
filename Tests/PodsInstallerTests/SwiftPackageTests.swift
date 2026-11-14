@@ -110,14 +110,18 @@ struct SwiftPackageTests {
     }
 
     /// Writes `Podfile.json` with target `App` depending on `Binary` and the given `swift_packages`.
-    private func writePodfile(packages: [(url: String, requirement: [String])]) throws {
+    /// `products` are `swift_package_products` of `App`; `usesFrameworks` turns on `use_frameworks!` (dynamic).
+    private func writePodfile(packages: [(url: String, requirement: [String])], products: [(name: String, package: String)] = [],
+                              usesFrameworks: Bool = false) throws {
         let packagesJSON = packages.map { package in
             #"{"url":"\#(package.url)","requirement":[\#(package.requirement.map { #""\#($0)""# }.joined(separator: ","))]}"#
         }.joined(separator: ",")
+        let productsJSON = products.map { #"{"name":"\#($0.name)","package":"\#($0.package)"}"# }.joined(separator: ",")
         try """
         {"swift_packages":[\(packagesJSON)],
          "target_definitions":[{"name":"Pods","abstract":true,"platform":{"ios":"16.0"},"children":[
-           {"name":"App","dependencies":[{"Binary":[{"path":"LocalPods/Binary"}]}]}]}]}
+           {"name":"App","uses_frameworks":\(usesFrameworks),"swift_package_products":[\(productsJSON)],
+            "dependencies":[{"Binary":[{"path":"LocalPods/Binary"}]}]}]}]}
         """.write(to: root.appendingPathComponent("Podfile.json"), atomically: true, encoding: .utf8)
     }
 
@@ -213,7 +217,8 @@ struct SwiftPackageTests {
         #expect(rootObject.remotePackages.count == 1)
         let reference = try #require(rootObject.remotePackages.first)
         #expect(reference.repositoryURL == fixture.libURL)
-        #expect(reference.versionRequirement == .range(from: "1.0.0", to: "1.0.1"))
+        // Pinned exactly: workspace builds resolve again without reading the Package.resolved under Pods/.
+        #expect(reference.versionRequirement == .exact("1.0.0"))
 
         let binary = try #require(project.pbxproj.nativeTargets.first { $0.name == "Binary" })
         #expect(binary.packageProductDependencies?.map(\.productName) == ["LibCore"])
@@ -250,6 +255,54 @@ struct SwiftPackageTests {
         // The lockfile read back equals the one a reinstall computes.
         try await Installer(context: try context(specs: [fixture.libSpec("1.0.0"), fixture.libSpec("2.0.0")]),
                             options: InstallOptions(deployment: true)).install()
+    }
+
+    @Test func linksIndirectAndDeclaredProductsThroughAggregate() async throws {
+        let fixture = try await SwiftPackageFixture.create(in: root)
+        try writePodfile(packages: [(fixture.wrapperURL, [">= 1.0.0", "< 2.0.0"])], products: [("Wrapper", "Wrapper")])
+        try await Installer(context: try context(specs: [fixture.libSpec("1.0.0"), fixture.libSpec("2.0.0")]), options: InstallOptions()).install()
+
+        let project = try XcodeProj(path: Path(root.appendingPathComponent("Pods/Pods.xcodeproj").path))
+        let aggregate = try #require(project.pbxproj.nativeTargets.first { $0.name == "Pods-App" })
+        #expect(aggregate.packageProductDependencies?.map(\.productName) == ["LibCore", "Wrapper"])
+        let linked = try aggregate.frameworksBuildPhase()?.files?.compactMap { $0.product?.productName } ?? []
+        #expect(linked == ["LibCore", "Wrapper"])
+        #expect(try #require(project.pbxproj.rootObject).remotePackages.map(\.versionRequirement) == [.exact("1.0.0"), .exact("1.0.0")])
+
+        let lockfile = try Lockfile(contentsOf: root.appendingPathComponent("Podfile.lock"))
+        #expect(lockfile.swiftPackages.count == 2)
+        #expect(lockfile.swiftPackages.first { $0.pods == ["Lib"] }?.requirement == "(< 1.0.1, >= 1.0.0)")
+        let wrapper = try #require(lockfile.swiftPackages.first { $0.url == fixture.wrapperURL })
+        #expect(wrapper.pods.isEmpty)
+        #expect(wrapper.requirement == "(< 2.0.0, >= 1.0.0)")
+    }
+
+    @Test func indirectNonUnifiedPinHasEmptyRequirement() async throws {
+        // `Lib` is only reached through `Wrapper` and no pod uses it, so it has no package reference.
+        let fixture = try await SwiftPackageFixture.create(in: root)
+        try writePodfile(packages: [(fixture.wrapperURL, [">= 1.0.0", "< 2.0.0"])])
+        try FileManager.default.removeItem(at: root.appendingPathComponent("LocalPods/Binary/Binary.podspec.json"))
+        try """
+        {"name":"Binary","version":"1.0.0","platforms":{"ios":"12.0"},"source":{"git":"https://example.com/Binary.git","tag":"1.0.0"},
+         "source_files":"*.m"}
+        """.write(to: root.appendingPathComponent("LocalPods/Binary/Binary.podspec.json"), atomically: true, encoding: .utf8)
+        try await Installer(context: try context(specs: [fixture.libSpec("1.0.0")]), options: InstallOptions()).install()
+
+        let lockfile = try Lockfile(contentsOf: root.appendingPathComponent("Podfile.lock"))
+        #expect(lockfile.swiftPackages.count == 2)
+        #expect(lockfile.swiftPackages.filter { $0.requirement.isEmpty }.map(\.pods) == [[]])
+        let project = try XcodeProj(path: Path(root.appendingPathComponent("Pods/Pods.xcodeproj").path))
+        #expect(try #require(project.pbxproj.rootObject).remotePackages.map(\.repositoryURL) == [fixture.wrapperURL])
+    }
+
+    @Test func rejectsUnifiedPackagesWithDynamicFrameworks() async throws {
+        let fixture = try await SwiftPackageFixture.create(in: root)
+        try writePodfile(packages: [(fixture.libURL, [">= 1.0.0", "< 2.0.0"])], usesFrameworks: true)
+        let error = await #expect(throws: PodsError.self) {
+            try await Installer(context: try context(specs: [fixture.libSpec("1.0.0"), fixture.libSpec("2.0.0")]), options: InstallOptions()).install()
+        }
+        #expect(error?.message.contains("dynamic frameworks") == true)
+        #expect(error?.message.contains("Binary") == true)
     }
 
     @Test func deintegrateRemovesPackageReferences() async throws {
@@ -289,12 +342,23 @@ struct SwiftPackageTests {
         }
         """.write(to: root.appendingPathComponent("App/App.swift"), atomically: true, encoding: .utf8)
 
+        // A newer version that the pods also accept: a reinstall keeps the pin (the allowed range now includes 1.0.1),
+        // and the workspace, which resolves again on its own, must still build the pinned version.
+        try await fixture.addLibPatchRelease()
+        let specs = [fixture.libSpec("1.0.0"), fixture.libSpec("1.0.1"), fixture.libSpec("2.0.0")]
+        try await Installer(context: try context(specs: specs), options: InstallOptions()).install()
+        let lockfile = try Lockfile(contentsOf: root.appendingPathComponent("Podfile.lock"))
+        #expect(lockfile.swiftPackages.first { $0.pods == ["Lib"] }?.requirement == "(< 1.0.2, >= 1.0.0)")
+
         let output = try await Shell().execute([
             "xcodebuild", "-workspace", "App.xcworkspace", "-scheme", "App", "-configuration", "Debug",
             "-sdk", "iphonesimulator", "-derivedDataPath", root.appendingPathComponent("DerivedData").path,
             "CODE_SIGNING_ALLOWED=NO", "build",
         ], in: root)
         let log = output.stdout + output.stderr
+        let workspaceResolved = root.appendingPathComponent("App.xcworkspace/xcshareddata/swiftpm/Package.resolved")
+        let pins = try SwiftPackageResolver.pins(fromResolved: Data(contentsOf: workspaceResolved))
+        #expect(pins.first { $0.identity == "lib" }?.version == Version(1, 0, 0))
         #expect(output.status == 0, "\(output.stdout.suffix(4000))\n\(output.stderr.suffix(2000))")
         #expect(!log.contains("duplicate symbol"))
         #expect(!log.contains("Undefined symbols"))

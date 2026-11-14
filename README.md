@@ -133,10 +133,13 @@ When a pod is the same library as a resolved package (its version tags point at 
 commits), SwiftPods uses the package instead of building the pod, so the library is linked only
 once. The package is restricted to the versions tagged at the same commit as a version the pods
 accept, and SwiftPM picks the version. The packages are added to `Pods/Pods.xcodeproj` as package
-references, their products are linked through the `Pods-<Target>` targets, the pins are written to
+references pinned to the exact resolved versions, their products are linked through the
+`Pods-<Target>` targets, the pins are written to
 `Pods/Pods.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`, and
-`Podfile.lock` records them under `SWIFT PACKAGES:`. Your own `.xcodeproj`, `Package.swift` and
-workspace `Package.resolved` are not written to.
+`Podfile.lock` records them under `SWIFT PACKAGES:`. `swiftpods install` keeps the pinned versions;
+`swiftpods update` moves them. Your own `.xcodeproj`, `Package.swift` and workspace
+`Package.resolved` are not written to. Unified packages are not supported yet with dynamic
+frameworks (`use_frameworks!` without `:linkage => :static`).
 
 ### Podspecs in Swift
 

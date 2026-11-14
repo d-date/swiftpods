@@ -63,11 +63,19 @@ struct TargetBuilder {
             for spec in specs {
                 for dependency in spec.dependencies(for: key.platform) { dependencyRoots.insert(dependency.rootName) }
             }
+            let packageProducts = try packageProducts(replacing: dependencyRoots)
+            // The products are linked once, statically, by the aggregate target; a dynamic framework would need them too.
+            if key.buildType == .dynamicFramework, !packageProducts.isEmpty {
+                throw PodsError(
+                    "`\(names[key]!)` depends on pods replaced by Swift packages (\(packageProducts.map(\.product).joined(separator: ", "))), "
+                        + "which is not supported yet with dynamic frameworks. Use `use_frameworks! :linkage => :static` or static libraries."
+                )
+            }
             podTargets[key] = PodTarget(
                 name: names[key]!, pod: pod, specs: specs, platform: platform, buildType: key.buildType,
                 dependencyNames: [], inhibitWarnings: variant.inhibitWarnings,
                 swiftVersion: files.usesSwift ? (pod.spec.swiftVersions.max()?.rawValue ?? "5.0") : nil,
-                packageProducts: try packageProducts(replacing: dependencyRoots),
+                packageProducts: packageProducts,
                 files: files
             )
         }
@@ -127,9 +135,10 @@ struct TargetBuilder {
 
     // MARK: - Swift packages
 
-    /// The roots of the final SwiftPM resolution: declared packages with their Podfile range, narrowed for unified ones.
-    private func packageReferences() throws -> [(url: String, lowerBound: Version, upperBound: Version)] {
-        guard analysis.swiftPackages != nil else { return [] }
+    /// The roots of the final SwiftPM resolution: declared packages with their Podfile range, narrowed for unified ones,
+    /// and the version that resolution pinned.
+    private func packageReferences() throws -> [(url: String, lowerBound: Version, upperBound: Version, version: Version)] {
+        guard let resolution = analysis.swiftPackages else { return [] }
         var references: [String: (url: String, lowerBound: Version, upperBound: Version)] = [:]
         for package in analysis.podfile.swiftPackages {
             let range = try SwiftPackageResolver.range(of: package.requirement, url: package.url)
@@ -138,7 +147,12 @@ struct TargetBuilder {
         for unification in analysis.unifications {
             references[try packageIdentity(of: unification.packageURL)] = (unification.packageURL, unification.lowerBound, unification.upperBound)
         }
-        return references.sorted { $0.key < $1.key }.map(\.value)
+        return try references.sorted { $0.key < $1.key }.map { identity, reference in
+            guard let pin = resolution.pins.first(where: { $0.identity == identity }) else {
+                throw PodsError("Swift package \(reference.url) is missing from the resolved packages.")
+            }
+            return (reference.url, reference.lowerBound, reference.upperBound, pin.version)
+        }
     }
 
     /// Library products of the packages that replace the pods among `roots`, ordered by pod.

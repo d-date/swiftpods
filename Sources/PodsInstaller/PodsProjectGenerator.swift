@@ -36,9 +36,9 @@ struct PodsProjectGenerator {
         let builder = ProjectBuilder(configurations: configurations, sandbox: sandbox)
         let xcconfigs = XCConfigBuilder(plan: plan, sandbox: sandbox)
         builder.addPodfileReference(plan.podfileURL)
+        // Exact versions: workspace builds resolve again and do not read the Package.resolved under Pods/.
         for package in plan.swiftPackages {
-            try builder.addPackageReference(url: package.url, from: SwiftPackageResolver.semanticVersion(package.lowerBound, url: package.url),
-                                            to: SwiftPackageResolver.semanticVersion(package.upperBound, url: package.url))
+            try builder.addPackageReference(url: package.url, exact: SwiftPackageResolver.semanticVersion(package.version, url: package.url))
         }
 
         var nativeTargets: [String: PBXTarget] = [:]
@@ -611,8 +611,8 @@ final class ProjectBuilder {
         return reference
     }
 
-    func addPackageReference(url: String, from lower: String, to upper: String) {
-        let reference = add(XCRemoteSwiftPackageReference(repositoryURL: url, versionRequirement: .range(from: lower, to: upper)))
+    func addPackageReference(url: String, exact version: String) {
+        let reference = add(XCRemoteSwiftPackageReference(repositoryURL: url, versionRequirement: .exact(version)))
         project.remotePackages.append(reference)
     }
 
