@@ -24,11 +24,13 @@ actor GitTagIndex {
         }
     }
 
-    /// Parses a tag as SwiftPM does: a single leading `v` or `V` is dropped before reading the version.
+    /// Parses a tag as SwiftPM does: a single leading `v` or `V` is dropped before reading the version,
+    /// and tags with more than three release components are not versions.
     static func swiftPMVersion(fromTag tag: String) -> Version? {
         var name = Substring(tag)
         if name.first == "v" || name.first == "V" { name = name.dropFirst() }
-        return Version(String(name))
+        guard let version = Version(String(name)), version.release.count <= 3 else { return nil }
+        return version
     }
 
     private static func listTags(of url: String, shell: Shell) async throws -> [String: String] {

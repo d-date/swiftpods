@@ -40,4 +40,11 @@ struct GitTagIndexTests {
         #expect(GitTagIndex.swiftPMVersion(fromTag: "v2.0.0") == Version(2, 0, 0))
         #expect(GitTagIndex.swiftPMVersion(fromTag: "CocoaPods-1.0.0") == nil)
     }
+
+    @Test func ignoresTagsWithMoreThanThreeReleaseComponents() {
+        // SwiftPM does not treat `1.2.3.4` as a version.
+        #expect(GitTagIndex.swiftPMVersion(fromTag: "1.2.3.4") == nil)
+        #expect(GitTagIndex.swiftPMVersion(fromTag: "v1.2.3.4") == nil)
+        #expect(GitTagIndex.swiftPMVersion(fromTag: "1.2.3") == Version(1, 2, 3))
+    }
 }
