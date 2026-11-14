@@ -102,8 +102,7 @@ struct Analyzer {
         let resolution = try await resolveDependencies()
         let ui = context.ui
         let externals = resolution.externals
-        let unified = Set(resolution.unifications.map(\.podRoot))
-        let resolved = resolution.pods.filter { !unified.contains($0.name) }
+        let resolved = Self.podsOutsideSwiftPM(resolution)
         let downloader = resolution.downloader
 
         // Download released pods in parallel.
@@ -134,6 +133,27 @@ struct Analyzer {
                         userProjects: resolution.userProjects, targetProjects: resolution.targetProjects,
                         targetPlatforms: resolution.targetPlatforms, unifications: resolution.unifications,
                         swiftPackages: resolution.swiftPackages)
+    }
+
+    /// Pods reachable from the Podfile without going through a pod replaced by a SwiftPM package;
+    /// the others come with the package.
+    private static func podsOutsideSwiftPM(_ resolution: Resolution) -> [ResolvedPod] {
+        guard !resolution.unifications.isEmpty else { return resolution.pods }
+        let unified = Set(resolution.unifications.map(\.podRoot))
+        let byName = Dictionary(resolution.pods.map { ($0.name, $0) }, uniquingKeysWith: { a, _ in a })
+        let platformNames = Set(resolution.targetPlatforms.values.map(\.name))
+        var reached = Set<String>()
+        var queue = resolution.podfile.allDependencies.map(\.dependency.rootName)
+        while let root = queue.popLast() {
+            guard !unified.contains(root), reached.insert(root).inserted, let pod = byName[root] else { continue }
+            for name in pod.activatedSpecs {
+                guard let spec = pod.spec.subspec(named: name) else { continue }
+                for platform in platformNames where spec.availablePlatforms.contains(where: { $0.name == platform }) {
+                    queue += spec.dependencies(for: platform).map(\.rootName)
+                }
+            }
+        }
+        return resolution.pods.filter { reached.contains($0.name) }
     }
 
     /// Loads the Podfile, fetches external sources and resolves versions.
@@ -238,7 +258,8 @@ struct Analyzer {
         for package in podfile.swiftPackages {
             requirements[package.identity] = (package.url, nil, nil, package.requirement)
         }
-        let first = try await resolver.resolve(requirements.sorted { $0.key < $1.key }.map(\.value), previousResolved: previousResolved)
+        let first = try await resolver.resolve(requirements.sorted { $0.key < $1.key }.map(\.value), previousResolved: previousResolved,
+                                               readingProducts: false)
 
         // Every package in the graph, including indirect ones, so that no library ends up linked twice.
         let packages = try await withThrowingTaskGroup(of: PackageUnifier.PackageCandidate.self) { group in
@@ -261,9 +282,13 @@ struct Analyzer {
             return result.sorted { $0.url < $1.url }
         }
         let candidates = try await podCandidates(podfile: podfile, pods: pods, externals: externals, platforms: platforms,
-                                                 sources: sources, tagIndex: tagIndex)
+                                                 packages: packages, sources: sources, tagIndex: tagIndex)
         let unifications = try PackageUnifier.unify(pods: candidates, packages: packages)
-        guard !unifications.isEmpty else { return ([], first) }
+        guard !unifications.isEmpty else {
+            // The first resolution is final.
+            return ([], SwiftPackageResolver.Result(pins: first.pins, libraryProducts: try await resolver.libraryProducts(),
+                                                    resolvedFile: first.resolvedFile))
+        }
 
         let identities = Dictionary(packages.map { ($0.url, $0.identity) }, uniquingKeysWith: { a, _ in a })
         for unification in unifications {
@@ -281,10 +306,14 @@ struct Analyzer {
         return (unifications, second)
     }
 
-    /// Pods from spec sources whose `source` is a git tag, with every requirement on them and the commits of all their versions.
+    /// Pods from spec sources that may be the same library as one of `packages`, with every requirement on them
+    /// and the commits of all their versions.
+    ///
+    /// A pod qualifies when its resolved version's source is a git tag and that repository shares a commit with a package
+    /// or has the same URL as one; only those pods get every version's spec fetched.
     private func podCandidates(
         podfile: Podfile, pods: [ResolvedPod], externals: [String: FetchedExternal], platforms: [String: Platform],
-        sources: SourcesManager, tagIndex: GitTagIndex
+        packages: [PackageUnifier.PackageCandidate], sources: SourcesManager, tagIndex: GitTagIndex
     ) async throws -> [PackageUnifier.PodCandidate] {
         var requirements: [String: [(origin: String, requirement: Requirement)]] = [:]
         func add(_ root: String, origin: String, _ requirement: Requirement) {
@@ -306,19 +335,38 @@ struct Analyzer {
             add(dependency.dependency.rootName, origin: "Podfile", dependency.dependency.requirement)
         }
 
-        let gitPods = pods.compactMap { pod -> (pod: ResolvedPod, repository: String)? in
-            guard externals[pod.name] == nil, case .git(let url, .tag, _)? = pod.spec.source else { return nil }
-            return (pod, url)
+        let packageCommits = Set(packages.flatMap(\.commits.values))
+        let packageURLs = Set(packages.map { PackageUnifier.normalize($0.url) })
+        let gitPods = try await withThrowingTaskGroup(of: (pod: ResolvedPod, repository: String)?.self) { group in
+            for pod in pods {
+                guard externals[pod.name] == nil, case .git(let url, .tag, _)? = pod.spec.source else { continue }
+                group.addTask {
+                    if packageURLs.contains(PackageUnifier.normalize(url)) { return (pod, url) }
+                    let tags = try await tagIndex.tags(of: url)
+                    return tags.values.contains(where: packageCommits.contains) ? (pod, url) : nil
+                }
+            }
+            var result: [(pod: ResolvedPod, repository: String)] = []
+            for try await candidate in group { if let candidate { result.append(candidate) } }
+            return result
         }
         // Commits of every version whose source is a git tag; specs are fetched concurrently.
+        // Versions come from the source's own listing, so a failure to load one of them is an error.
+        let ui = context.ui
         let commits = try await withThrowingTaskGroup(of: (String, Version, String?).self) { group in
-            for (pod, _) in gitPods {
+            for (pod, repository) in gitPods {
                 for candidate in try await sources.candidates(for: pod.name) {
                     group.addTask {
-                        // An old podspec that no longer loads cannot identify the library; skip it.
-                        guard let spec = try? await candidate.source.specification(of: pod.name, version: candidate.version),
-                              case .git(let url, .tag(let tag), _)? = spec.source else { return (pod.name, candidate.version, nil) }
-                        return (pod.name, candidate.version, try await tagIndex.tags(of: url)[tag])
+                        let spec = try await candidate.source.specification(of: pod.name, version: candidate.version)
+                        guard case .git(let url, .tag(let tag), _)? = spec.source else { return (pod.name, candidate.version, nil) }
+                        guard url != repository else { return (pod.name, candidate.version, try await tagIndex.tags(of: url)[tag]) }
+                        // Old versions may point at a repository that no longer exists.
+                        do {
+                            return (pod.name, candidate.version, try await tagIndex.tags(of: url)[tag])
+                        } catch {
+                            ui.warn("Skipping \(pod.name) \(candidate.version) while matching Swift packages: cannot list the tags of \(url).")
+                            return (pod.name, candidate.version, nil)
+                        }
                     }
                 }
             }

@@ -133,7 +133,7 @@ struct PackageUnifier {
     }
 
     /// Lowercased, without a trailing `/` or `.git`, so that equivalent repository URLs compare equal.
-    private static func normalize(_ url: String) -> String {
+    static func normalize(_ url: String) -> String {
         var result = url.lowercased()
         while result.hasSuffix("/") { result.removeLast() }
         if result.hasSuffix(".git") { result.removeLast(4) }

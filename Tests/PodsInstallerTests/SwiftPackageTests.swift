@@ -74,8 +74,8 @@ struct SwiftPackageFixture {
     }
 
     /// The spec of pod `Lib` at `version`, downloaded from the `CocoaPods-<version>` tag.
-    func libSpec(_ version: String) -> String {
-        #"{"name":"Lib","version":"\#(version)","platforms":{"ios":"12.0"},"source":{"git":"\#(libURL)","tag":"CocoaPods-\#(version)"},"source_files":"Sources/LibCore/*.m"}"#
+    func libSpec(_ version: String, dependencies: String = "{}") -> String {
+        #"{"name":"Lib","version":"\#(version)","platforms":{"ios":"12.0"},"source":{"git":"\#(libURL)","tag":"CocoaPods-\#(version)"},"source_files":"Sources/LibCore/*.m","dependencies":\#(dependencies)}"#
     }
 
     private static func write(_ contents: String, to file: URL) throws {
@@ -195,6 +195,47 @@ struct SwiftPackageTests {
 
         let updated = try await analyze(specs: specs, update: .all)
         #expect(updated.swiftPackages?.pins.first { $0.identity == "lib" }?.version == Version(1, 0, 1))
+    }
+
+    @Test func secondResolutionNarrowsDeclaredRange() async throws {
+        let fixture = try await SwiftPackageFixture.create(in: root)
+        let declared = (url: fixture.libURL, requirement: [">= 1.0.0", "< 3.0.0"])
+        try writePodfile(packages: [declared])
+
+        // With only the declared range, SwiftPM picks 2.0.0.
+        let direct = try await SwiftPackageResolver(workDirectory: root.appendingPathComponent("direct"), shell: SwiftPackageFixture.shell)
+            .resolve([(declared.url, nil, nil, try Requirement(parsing: declared.requirement))], previousResolved: nil)
+        #expect(direct.pins.map(\.version) == [Version(2, 0, 0)])
+
+        let analysis = try await analyze(specs: [fixture.libSpec("1.0.0"), fixture.libSpec("2.0.0")])
+        #expect(analysis.unifications.first?.allowedVersions == [Version(1, 0, 0)])
+        #expect(analysis.swiftPackages?.pins.map(\.version) == [Version(1, 0, 0)])
+    }
+
+    @Test func dropsPodsOnlyReachableThroughUnifiedPods() async throws {
+        let fixture = try await SwiftPackageFixture.create(in: root)
+        try writePodfile(packages: [(fixture.libURL, [">= 1.0.0", "< 2.0.0"])])
+        // `LibDep` has no downloadable source: installing it as a pod would fail.
+        let libDep = #"{"name":"LibDep","version":"1.0.0","platforms":{"ios":"12.0"},"source":{"http":"https://example.invalid/LibDep.zip"}}"#
+        let dependencies = #"{"LibDep":["~> 1.0"]}"#
+        let analysis = try await analyze(specs: [fixture.libSpec("1.0.0", dependencies: dependencies), libDep])
+        #expect(analysis.unifications.map(\.podRoot) == ["Lib"])
+        #expect(analysis.pods.map(\.name) == ["Binary"])
+    }
+
+    @Test func skipsOldPodVersionsOfVanishedRepositories() async throws {
+        let fixture = try await SwiftPackageFixture.create(in: root)
+        try writePodfile(packages: [(fixture.libURL, [">= 1.0.0", "< 2.0.0"])])
+        let gone = "file://" + root.appendingPathComponent("Repos/Gone").path
+        // An old `Lib` released from a repository that no longer exists.
+        let oldLib = #"{"name":"Lib","version":"0.9.0","platforms":{"ios":"12.0"},"source":{"git":"\#(gone)","tag":"0.9.0"}}"#
+        let ui = UI.capturing()
+        let context = try InstallerContext(projectDirectory: root, cacheRoot: cache, ui: ui,
+                                           sources: SourcesManager(sources: [try MemorySource([oldLib, fixture.libSpec("1.0.0")])]),
+                                           shell: SwiftPackageFixture.shell)
+        let analysis = try await Analyzer(context: context, options: InstallOptions()).analyze()
+        #expect(analysis.unifications.map(\.allowedVersions) == [[Version(1, 0, 0)]])
+        #expect(ui.warnings.contains { $0.contains("Lib 0.9.0") && $0.contains(gone) })
     }
 
     @Test func podfileWithoutPackagesSkipsSwiftPM() async throws {

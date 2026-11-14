@@ -27,8 +27,9 @@ struct SwiftPackageResolver {
     }
 
     /// `requirements` maps a package URL to its range. `previousResolved` is copied in first so pins are kept.
+    /// With `readingProducts: false`, `libraryProducts` is left empty (for a resolution that is not final).
     func resolve(_ requirements: [(url: String, lowerBound: Version?, upperBound: Version?, requirement: Requirement?)],
-                 previousResolved: Data?) async throws -> Result {
+                 previousResolved: Data?, readingProducts: Bool = true) async throws -> Result {
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: workDirectory, withIntermediateDirectories: true)
         var dependencies: [String] = []
@@ -69,9 +70,10 @@ struct SwiftPackageResolver {
         // Without pins, `update` fetches the repositories and picks the newest versions; `resolve` would
         // keep the checkouts left in `.build` by an earlier run.
         try await shell.run("swift", ["package", previousResolved == nil ? "update" : "resolve"], in: workDirectory)
-        let resolvedFile = (try? Data(contentsOf: resolvedURL)) ?? Data()
+        // SwiftPM writes no `Package.resolved` when there is nothing to pin.
+        let resolvedFile = fileManager.fileExists(atPath: resolvedURL.path) ? try Data(contentsOf: resolvedURL) : Data()
         let pins = resolvedFile.isEmpty ? [] : try Self.pins(fromResolved: resolvedFile)
-        return Result(pins: pins, libraryProducts: try await libraryProducts(), resolvedFile: resolvedFile)
+        return Result(pins: pins, libraryProducts: readingProducts ? try await libraryProducts() : [:], resolvedFile: resolvedFile)
     }
 
     /// Reads the pins of a `Package.resolved` file (format version 2 or 3).
@@ -93,8 +95,8 @@ struct SwiftPackageResolver {
         .sorted { $0.identity < $1.identity }
     }
 
-    /// Library products of every resolved package, read from each checkout's manifest.
-    private func libraryProducts() async throws -> [String: [String]] {
+    /// Library products of every package of the last resolution, read from each checkout's manifest.
+    func libraryProducts() async throws -> [String: [String]] {
         let output = try await shell.run("swift", ["package", "show-dependencies", "--format", "json"], in: workDirectory)
         var checkouts: [String: String] = [:]
         func collect(_ node: JSON) {
