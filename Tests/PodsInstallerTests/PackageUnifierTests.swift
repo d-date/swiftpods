@@ -137,6 +137,83 @@ struct PackageUnifierTests {
         #expect(result.map(\.podRoot) == ["GTMSessionFetcher", "PromisesObjC"])
     }
 
+    @Test func identifiesPodByOutOfRangeCommitAndRejectsIt() throws {
+        // Only 9.0.0 shares a commit with the package, and it is outside the requirement.
+        let pod = PackageUnifier.PodCandidate(
+            root: "GoogleUtilities",
+            requirements: [(origin: "MLKitCommon", requirement: try Requirement(parsing: "~> 8.0"))],
+            commits: [Version(8, 1, 0): "cX", Version(9, 0, 0): "c9"],
+            repository: nil
+        )
+        let package = PackageUnifier.PackageCandidate(
+            url: "https://github.com/google/GoogleUtilities.git",
+            identity: "googleutilities",
+            podfileRequirement: nil,
+            commits: [Version(8, 1, 0): "cY", Version(9, 0, 0): "c9"]
+        )
+        let error = #expect(throws: PodsError.self) {
+            try PackageUnifier.unify(pods: [pod], packages: [package])
+        }
+        #expect(error?.message.contains("MLKitCommon requires GoogleUtilities (~> 8.0)") == true)
+    }
+
+    @Test func intersectsAllowedVersionsOfPodsSharingAPackage() throws {
+        let package = PackageUnifier.PackageCandidate(
+            url: "https://github.com/google/GoogleUtilities.git",
+            identity: "googleutilities",
+            podfileRequirement: nil,
+            commits: [Version(8, 0, 0): "c0", Version(8, 1, 0): "c1", Version(8, 2, 0): "c2"]
+        )
+        let commits = [Version(8, 0, 0): "c0", Version(8, 1, 0): "c1", Version(8, 2, 0): "c2"]
+        let logger = PackageUnifier.PodCandidate(
+            root: "GoogleUtilitiesLogger",
+            requirements: [(origin: "MLKitCommon", requirement: try Requirement(parsing: ">= 8.1"))],
+            commits: commits,
+            repository: nil
+        )
+        let environment = PackageUnifier.PodCandidate(
+            root: "GoogleUtilitiesEnvironment",
+            requirements: [(origin: "MLKitVision", requirement: try Requirement(parsing: "< 8.2"))],
+            commits: commits,
+            repository: nil
+        )
+        let result = try PackageUnifier.unify(pods: [logger, environment], packages: [package])
+        #expect(result.map(\.podRoot) == ["GoogleUtilitiesEnvironment", "GoogleUtilitiesLogger"])
+        #expect(result.allSatisfy { $0.allowedVersions == [Version(8, 1, 0)] })
+        #expect(result.allSatisfy { $0.lowerBound == Version(8, 1, 0) && $0.upperBound == Version(8, 1, 1) })
+
+        let strict = PackageUnifier.PodCandidate(
+            root: "GoogleUtilitiesEnvironment",
+            requirements: [(origin: "MLKitVision", requirement: try Requirement(parsing: "< 8.1"))],
+            commits: commits,
+            repository: nil
+        )
+        let error = #expect(throws: PodsError.self) {
+            try PackageUnifier.unify(pods: [logger, strict], packages: [package])
+        }
+        let message = error?.message ?? ""
+        #expect(message.contains("MLKitCommon requires GoogleUtilitiesLogger (>= 8.1)"))
+        #expect(message.contains("MLKitVision requires GoogleUtilitiesEnvironment (< 8.1)"))
+        #expect(message.contains("GoogleUtilities.git"))
+    }
+
+    @Test func excludesPreReleasePackageVersions() throws {
+        let pod = PackageUnifier.PodCandidate(
+            root: "GoogleUtilities",
+            requirements: [(origin: "MLKitCommon", requirement: .any)],
+            commits: [Version(8, 0, 0): "c0", Version(8, 1, 0): "c1"],
+            repository: nil
+        )
+        let package = PackageUnifier.PackageCandidate(
+            url: "https://github.com/google/GoogleUtilities.git",
+            identity: "googleutilities",
+            podfileRequirement: nil,
+            commits: [Version(8, 0, 0): "c0", Version("8.1.0-beta.1")!: "c1"]
+        )
+        let result = try PackageUnifier.unify(pods: [pod], packages: [package])
+        #expect(result.map(\.allowedVersions) == [[Version(8, 0, 0)]])
+    }
+
     @Test func rejectsResolvedVersionOutsideAllowedSet() throws {
         let unification = PackageUnifier.Unification(
             podRoot: "GoogleUtilities",

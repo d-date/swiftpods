@@ -10,7 +10,8 @@ struct PackageUnifier {
         let root: String
         /// Every requirement on the pod, with who declared it (for error messages).
         let requirements: [(origin: String, requirement: Requirement)]
-        /// Pod version → commit of its `source` tag, for versions whose source is a git tag.
+        /// Pod version → commit of its `source` tag, for every version whose source is a git tag
+        /// (not only versions within the requirements; all of them are used to identify the library).
         let commits: [Version: String]
         /// The pod's source repository, normalized (lowercased, no `.git`, no trailing `/`).
         let repository: String?
@@ -36,42 +37,54 @@ struct PackageUnifier {
     }
 
     static func unify(pods: [PodCandidate], packages: [PackageCandidate]) throws(PodsError) -> [Unification] {
-        var unifications: [Unification] = []
+        // Package index → pods identified as the same library.
+        var podsByPackage: [Int: [PodCandidate]] = [:]
         for pod in pods {
-            let acceptableCommits = Set(
-                pod.commits.filter { version, _ in
-                    pod.requirements.allSatisfy { $0.requirement.isSatisfied(by: version) }
-                }.values
-            )
-            let matches = packages.filter { package in
-                package.commits.values.contains(where: acceptableCommits.contains)
+            let podCommits = Set(pod.commits.values)
+            let matches = packages.indices.filter { index in
+                let package = packages[index]
+                return package.commits.values.contains(where: podCommits.contains)
                     || pod.repository.map { normalize($0) == normalize(package.url) } == true
             }
-            guard let package = matches.first else { continue }
+            guard let match = matches.first else { continue }
             guard matches.count == 1 else {
                 throw PodsError(
                     "Pod '\(pod.root)' matches several Swift packages: "
-                        + matches.map(\.url).sorted().joined(separator: ", ")
+                        + matches.map { packages[$0].url }.sorted().joined(separator: ", ")
                 )
             }
+            podsByPackage[match, default: []].append(pod)
+        }
 
+        var unifications: [Unification] = []
+        for (index, matchedPods) in podsByPackage {
+            let package = packages[index]
+            // Commits each pod accepts: those of its versions that satisfy every requirement on it.
+            let acceptedCommits = matchedPods.map { pod in
+                Set(pod.commits.filter { version, _ in
+                    pod.requirements.allSatisfy { $0.requirement.isSatisfied(by: version) }
+                }.values)
+            }
             let allowed = package.commits
                 .filter { version, commit in
-                    acceptableCommits.contains(commit)
+                    !version.isPreRelease
                         && package.podfileRequirement?.isSatisfied(by: version) != false
+                        && acceptedCommits.allSatisfy { $0.contains(commit) }
                 }
                 .keys
                 .sorted()
             guard let lowest = allowed.first, let highest = allowed.last else {
-                throw conflict(pod: pod, package: package)
+                throw conflict(pods: matchedPods, package: package)
             }
-            unifications.append(Unification(
-                podRoot: pod.root,
-                packageURL: package.url,
-                allowedVersions: allowed,
-                lowerBound: lowest,
-                upperBound: Version(highest.major, highest.minor, highest.patch + 1)
-            ))
+            for pod in matchedPods {
+                unifications.append(Unification(
+                    podRoot: pod.root,
+                    packageURL: package.url,
+                    allowedVersions: allowed,
+                    lowerBound: lowest,
+                    upperBound: Version(highest.major, highest.minor, highest.patch + 1)
+                ))
+            }
         }
         return unifications.sorted { $0.podRoot < $1.podRoot }
     }
@@ -87,13 +100,16 @@ struct PackageUnifier {
         }
     }
 
-    private static func conflict(pod: PodCandidate, package: PackageCandidate) -> PodsError {
+    private static func conflict(pods: [PodCandidate], package: PackageCandidate) -> PodsError {
+        let roots = pods.map { "'\($0.root)'" }.sorted().joined(separator: ", ")
         var lines = [
-            "No version of Swift package \(package.url) satisfies every requirement on pod '\(pod.root)' "
+            "No version of Swift package \(package.url) satisfies every requirement on pod \(roots) "
                 + "(only versions tagged at the same commit as an acceptable pod version are allowed):",
         ]
-        for (origin, requirement) in pod.requirements {
-            lines.append("  - \(origin) requires \(pod.root) \(describe(requirement))")
+        for pod in pods.sorted(by: { $0.root < $1.root }) {
+            for (origin, requirement) in pod.requirements {
+                lines.append("  - \(origin) requires \(pod.root) \(describe(requirement))")
+            }
         }
         if let podfileRequirement = package.podfileRequirement {
             lines.append("  - Podfile.swift requires \(package.identity) \(describe(podfileRequirement))")
