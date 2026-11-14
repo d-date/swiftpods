@@ -34,6 +34,8 @@ struct PackageUnifier {
         let lowerBound: Version
         /// Exclusive: the highest allowed version with its patch component + 1.
         let upperBound: Version
+        /// Commits of the allowed versions.
+        let allowedCommits: Set<String>
     }
 
     static func unify(pods: [PodCandidate], packages: [PackageCandidate]) throws(PodsError) -> [Unification] {
@@ -57,7 +59,8 @@ struct PackageUnifier {
         }
 
         var unifications: [Unification] = []
-        for (index, matchedPods) in podsByPackage {
+        // Sorted so that the first conflict reported does not depend on dictionary order.
+        for (index, matchedPods) in podsByPackage.sorted(by: { packages[$0.key].url < packages[$1.key].url }) {
             let package = packages[index]
             // Commits each pod accepts: those of its versions that satisfy every requirement on it.
             let acceptedCommits = matchedPods.map { pod in
@@ -82,20 +85,28 @@ struct PackageUnifier {
                     packageURL: package.url,
                     allowedVersions: allowed,
                     lowerBound: lowest,
-                    upperBound: Version(highest.major, highest.minor, highest.patch + 1)
+                    upperBound: Version(highest.major, highest.minor, highest.patch + 1),
+                    allowedCommits: Set(allowed.compactMap { package.commits[$0] })
                 ))
             }
         }
         return unifications.sorted { $0.podRoot < $1.podRoot }
     }
 
-    /// Checks the version chosen by SwiftPM's second resolution.
-    static func verify(_ unification: Unification, resolved: Version) throws(PodsError) {
+    /// Checks the version and revision chosen by SwiftPM's second resolution.
+    /// The revision is checked too because a tag may have been moved since the tags were listed.
+    static func verify(_ unification: Unification, resolved: Version, revision: String) throws(PodsError) {
         guard unification.allowedVersions.contains(resolved) else {
             throw PodsError(
                 "Swift package \(unification.packageURL) resolved to \(resolved), which does not match the commit of any "
                     + "acceptable version of pod '\(unification.podRoot)'. Allowed versions: "
                     + unification.allowedVersions.map(\.description).joined(separator: ", ")
+            )
+        }
+        guard unification.allowedCommits.contains(revision) else {
+            throw PodsError(
+                "Swift package \(unification.packageURL) resolved to \(resolved) at commit \(revision), which is not the commit "
+                    + "of any acceptable version of pod '\(unification.podRoot)'."
             )
         }
     }

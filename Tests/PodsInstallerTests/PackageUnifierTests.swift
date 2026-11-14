@@ -31,7 +31,8 @@ struct PackageUnifierTests {
                 packageURL: gtmURL,
                 allowedVersions: [Version(3, 3, 2), Version(3, 5, 0)],
                 lowerBound: Version(3, 3, 2),
-                upperBound: Version(3, 5, 1)
+                upperBound: Version(3, 5, 1),
+                allowedCommits: ["c1", "c2"]
             ),
         ])
     }
@@ -220,11 +221,28 @@ struct PackageUnifierTests {
             packageURL: "https://github.com/google/GoogleUtilities.git",
             allowedVersions: [Version(8, 0, 0), Version(8, 2, 0)],
             lowerBound: Version(8, 0, 0),
-            upperBound: Version(8, 2, 1)
+            upperBound: Version(8, 2, 1),
+            allowedCommits: ["c0", "c2"]
         )
         #expect(throws: PodsError.self) {
-            try PackageUnifier.verify(unification, resolved: Version(8, 1, 0))
+            try PackageUnifier.verify(unification, resolved: Version(8, 1, 0), revision: "c1")
         }
-        try PackageUnifier.verify(unification, resolved: Version(8, 2, 0))
+        try PackageUnifier.verify(unification, resolved: Version(8, 2, 0), revision: "c2")
+    }
+
+    @Test func rejectsResolvedRevisionOutsideAllowedCommits() throws {
+        let unification = PackageUnifier.Unification(
+            podRoot: "GoogleUtilities",
+            packageURL: "https://github.com/google/GoogleUtilities.git",
+            allowedVersions: [Version(8, 0, 0)],
+            lowerBound: Version(8, 0, 0),
+            upperBound: Version(8, 0, 1),
+            allowedCommits: ["c0"]
+        )
+        // The tag was moved to another commit after the tags were listed.
+        let error = #expect(throws: PodsError.self) {
+            try PackageUnifier.verify(unification, resolved: Version(8, 0, 0), revision: "moved")
+        }
+        #expect(error?.message.contains("moved") == true)
     }
 }

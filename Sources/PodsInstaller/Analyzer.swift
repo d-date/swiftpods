@@ -1,3 +1,4 @@
+import CryptoKit
 public import Foundation
 public import PodsCore
 import PodsDownloader
@@ -71,6 +72,10 @@ struct Analysis: Sendable {
     let targetProjects: [String: URL]
     /// Platform of every non-abstract target.
     let targetPlatforms: [String: Platform]
+    /// Pods replaced by SwiftPM packages; they are not in `pods`.
+    let unifications: [PackageUnifier.Unification]
+    /// `nil` when the Podfile declares no SwiftPM packages.
+    let swiftPackages: SwiftPackageResolver.Result?
 }
 
 /// Loads the Podfile, fetches external sources, resolves and downloads pods.
@@ -86,15 +91,19 @@ struct Analyzer {
         let targetProjects: [String: URL]
         let targetPlatforms: [String: Platform]
         let externals: [String: FetchedExternal]
+        /// Every resolved pod, including those replaced by SwiftPM packages.
         let pods: [ResolvedPod]
         let downloader: Downloader
+        let unifications: [PackageUnifier.Unification]
+        let swiftPackages: SwiftPackageResolver.Result?
     }
 
     func analyze() async throws -> Analysis {
         let resolution = try await resolveDependencies()
         let ui = context.ui
         let externals = resolution.externals
-        let resolved = resolution.pods
+        let unified = Set(resolution.unifications.map(\.podRoot))
+        let resolved = resolution.pods.filter { !unified.contains($0.name) }
         let downloader = resolution.downloader
 
         // Download released pods in parallel.
@@ -123,7 +132,8 @@ struct Analyzer {
         }
         return Analysis(podfile: resolution.podfile, lockfile: resolution.lockfile, pods: pods,
                         userProjects: resolution.userProjects, targetProjects: resolution.targetProjects,
-                        targetPlatforms: resolution.targetPlatforms)
+                        targetPlatforms: resolution.targetPlatforms, unifications: resolution.unifications,
+                        swiftPackages: resolution.swiftPackages)
     }
 
     /// Loads the Podfile, fetches external sources and resolves versions.
@@ -195,8 +205,134 @@ struct Analyzer {
             try await Resolver(sources: sources, externalSpecs: externals.mapValues(\.spec), lockedVersions: locked, unlockedPods: unlocked)
                 .resolve(roots)
         }
+        var unifications: [PackageUnifier.Unification] = []
+        var swiftPackages: SwiftPackageResolver.Result?
+        if !podfile.swiftPackages.isEmpty {
+            (unifications, swiftPackages) = try await ui.section("Resolving Swift packages") {
+                try await resolveSwiftPackages(podfile: podfile, pods: resolved, externals: externals, platforms: platforms, sources: sources)
+            }
+        }
         return Resolution(podfile: podfile, lockfile: lockfile, userProjects: userProjects, targetProjects: targetProjects, targetPlatforms: platforms,
-                          externals: externals, pods: resolved, downloader: downloader)
+                          externals: externals, pods: resolved, downloader: downloader, unifications: unifications, swiftPackages: swiftPackages)
+    }
+
+    // MARK: - Swift packages
+
+    private typealias PackageRequirement = (url: String, lowerBound: Version?, upperBound: Version?, requirement: Requirement?)
+
+    /// Resolves the declared packages, finds the pods that are the same library as a resolved package,
+    /// and resolves again with those packages narrowed to the versions the pods accept.
+    private func resolveSwiftPackages(
+        podfile: Podfile, pods: [ResolvedPod], externals: [String: FetchedExternal], platforms: [String: Platform], sources: SourcesManager
+    ) async throws -> ([PackageUnifier.Unification], SwiftPackageResolver.Result) {
+        let pathHash = Insecure.SHA1.hash(data: Data(context.podfileURL.standardizedFileURL.path.utf8)).map { String(format: "%02x", $0) }.joined()
+        let resolver = SwiftPackageResolver(
+            workDirectory: context.cacheRoot.appendingPathComponent("SwiftPackages").appendingPathComponent(pathHash), shell: context.shell
+        )
+        let resolvedFileURL = context.sandbox.projectURL.appendingPathComponent("project.xcworkspace/xcshareddata/swiftpm/Package.resolved")
+        let previousResolved = options.update == .none ? try? Data(contentsOf: resolvedFileURL) : nil
+        let tagIndex = GitTagIndex(shell: context.shell)
+
+        // Declared packages by identity.
+        var requirements: [String: PackageRequirement] = [:]
+        for package in podfile.swiftPackages {
+            requirements[package.identity] = (package.url, nil, nil, package.requirement)
+        }
+        let first = try await resolver.resolve(requirements.sorted { $0.key < $1.key }.map(\.value), previousResolved: previousResolved)
+
+        // Every package in the graph, including indirect ones, so that no library ends up linked twice.
+        let packages = try await withThrowingTaskGroup(of: PackageUnifier.PackageCandidate.self) { group in
+            for pin in first.pins {
+                let declared = podfile.swiftPackages.first { $0.identity == pin.identity }
+                // SwiftPM records `file://` URLs as plain paths; keep the URL as written in the Podfile.
+                let url = declared?.url ?? pin.url
+                group.addTask {
+                    let tags = try await tagIndex.tags(of: pin.url)
+                    var commits: [Version: String] = [:]
+                    for (tag, commit) in tags.sorted(by: { $0.key < $1.key }) {
+                        guard let version = GitTagIndex.swiftPMVersion(fromTag: tag), commits[version] == nil else { continue }
+                        commits[version] = commit
+                    }
+                    return PackageUnifier.PackageCandidate(url: url, identity: pin.identity, podfileRequirement: declared?.requirement, commits: commits)
+                }
+            }
+            var result: [PackageUnifier.PackageCandidate] = []
+            for try await package in group { result.append(package) }
+            return result.sorted { $0.url < $1.url }
+        }
+        let candidates = try await podCandidates(podfile: podfile, pods: pods, externals: externals, platforms: platforms,
+                                                 sources: sources, tagIndex: tagIndex)
+        let unifications = try PackageUnifier.unify(pods: candidates, packages: packages)
+        guard !unifications.isEmpty else { return ([], first) }
+
+        let identities = Dictionary(packages.map { ($0.url, $0.identity) }, uniquingKeysWith: { a, _ in a })
+        for unification in unifications {
+            let identity = identities[unification.packageURL]!
+            requirements[identity] = (unification.packageURL, unification.lowerBound, unification.upperBound, nil)
+        }
+        let second = try await resolver.resolve(requirements.sorted { $0.key < $1.key }.map(\.value), previousResolved: previousResolved)
+        for unification in unifications {
+            let identity = identities[unification.packageURL]!
+            guard let pin = second.pins.first(where: { $0.identity == identity }) else {
+                throw PodsError("Swift package \(unification.packageURL) is missing from the resolved packages.")
+            }
+            try PackageUnifier.verify(unification, resolved: pin.version, revision: pin.revision)
+        }
+        return (unifications, second)
+    }
+
+    /// Pods from spec sources whose `source` is a git tag, with every requirement on them and the commits of all their versions.
+    private func podCandidates(
+        podfile: Podfile, pods: [ResolvedPod], externals: [String: FetchedExternal], platforms: [String: Platform],
+        sources: SourcesManager, tagIndex: GitTagIndex
+    ) async throws -> [PackageUnifier.PodCandidate] {
+        var requirements: [String: [(origin: String, requirement: Requirement)]] = [:]
+        func add(_ root: String, origin: String, _ requirement: Requirement) {
+            guard !requirements[root, default: []].contains(where: { $0.origin == origin && $0.requirement == requirement }) else { return }
+            requirements[root, default: []].append((origin, requirement))
+        }
+        let platformNames = Set(platforms.values.map(\.name)).sorted()
+        for pod in pods {
+            for name in pod.activatedSpecs {
+                guard let spec = pod.spec.subspec(named: name) else { continue }
+                for platform in platformNames where spec.availablePlatforms.contains(where: { $0.name == platform }) {
+                    for dependency in spec.dependencies(for: platform) where dependency.rootName != pod.name {
+                        add(dependency.rootName, origin: name, dependency.requirement)
+                    }
+                }
+            }
+        }
+        for dependency in podfile.allDependencies {
+            add(dependency.dependency.rootName, origin: "Podfile", dependency.dependency.requirement)
+        }
+
+        let gitPods = pods.compactMap { pod -> (pod: ResolvedPod, repository: String)? in
+            guard externals[pod.name] == nil, case .git(let url, .tag, _)? = pod.spec.source else { return nil }
+            return (pod, url)
+        }
+        // Commits of every version whose source is a git tag; specs are fetched concurrently.
+        let commits = try await withThrowingTaskGroup(of: (String, Version, String?).self) { group in
+            for (pod, _) in gitPods {
+                for candidate in try await sources.candidates(for: pod.name) {
+                    group.addTask {
+                        // An old podspec that no longer loads cannot identify the library; skip it.
+                        guard let spec = try? await candidate.source.specification(of: pod.name, version: candidate.version),
+                              case .git(let url, .tag(let tag), _)? = spec.source else { return (pod.name, candidate.version, nil) }
+                        return (pod.name, candidate.version, try await tagIndex.tags(of: url)[tag])
+                    }
+                }
+            }
+            var result: [String: [Version: String]] = [:]
+            for try await (name, version, commit) in group {
+                if let commit { result[name, default: [:]][version] = commit }
+            }
+            return result
+        }
+        return gitPods.map { pod, repository in
+            PackageUnifier.PodCandidate(root: pod.name, requirements: requirements[pod.name] ?? [], commits: commits[pod.name] ?? [:],
+                                        repository: repository)
+        }
+        .sorted { $0.root < $1.root }
     }
 
     static func projectURL(for target: ResolvedTarget, projectDirectory: URL) throws -> URL {

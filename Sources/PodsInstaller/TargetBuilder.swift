@@ -117,7 +117,11 @@ struct TargetBuilder {
         while let name = queue.popLast() {
             guard visited.insert(name).inserted else { continue }
             let root = Dependency.rootName(of: name)
-            guard let pod = pods[root] else { throw PodsError("`\(root)` was not resolved.") }
+            guard let pod = pods[root] else {
+                // Pods replaced by SwiftPM packages have no pod target.
+                if analysis.unifications.contains(where: { $0.podRoot == root }) { continue }
+                throw PodsError("`\(root)` was not resolved.")
+            }
             guard let spec = pod.spec.subspec(named: name) else {
                 throw PodsError("`\(pod.spec.name) (\(pod.spec.version))` has no subspec named `\(name)`.")
             }
