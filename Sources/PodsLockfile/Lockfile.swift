@@ -19,6 +19,26 @@ public struct Lockfile: Sendable, Equatable {
         }
     }
 
+    /// A SwiftPM package pinned in the lockfile.
+    public struct SwiftPackage: Sendable, Equatable {
+        public var url: String
+        /// The combined requirement the package was resolved against, in lockfile notation.
+        public var requirement: String
+        public var version: Version
+        /// Commit the version tag points to.
+        public var revision: String
+        /// Pods that share this package.
+        public var pods: [String]
+
+        public init(url: String, requirement: String, version: Version, revision: String, pods: [String]) {
+            self.url = url
+            self.requirement = requirement
+            self.version = version
+            self.revision = revision
+            self.pods = pods
+        }
+    }
+
     public var pods: [Pod]
     /// Podfile dependencies in lockfile notation (`Alamofire (~> 5.9)`).
     public var dependencies: [String]
@@ -29,6 +49,8 @@ public struct Lockfile: Sendable, Equatable {
     /// Root pod name → resolved checkout (`:git`, `:commit`) for git-based pods.
     public var checkoutOptions: [String: [String: String]]
     public var specChecksums: [String: String]
+    /// SwiftPM packages resolved together with the pods (`SWIFT PACKAGES` section, a SwiftPods extension).
+    public var swiftPackages: [SwiftPackage]
     public var podfileChecksum: String?
     public var cocoapodsVersion: String
 
@@ -38,7 +60,7 @@ public struct Lockfile: Sendable, Equatable {
     public init(
         pods: [Pod] = [], dependencies: [String] = [], specRepos: [String: [String]] = [:],
         externalSources: [String: [String: String]] = [:], checkoutOptions: [String: [String: String]] = [:],
-        specChecksums: [String: String] = [:], podfileChecksum: String? = nil,
+        specChecksums: [String: String] = [:], swiftPackages: [SwiftPackage] = [], podfileChecksum: String? = nil,
         cocoapodsVersion: String = Lockfile.compatibleCocoaPodsVersion
     ) {
         self.pods = pods
@@ -47,6 +69,7 @@ public struct Lockfile: Sendable, Equatable {
         self.externalSources = externalSources
         self.checkoutOptions = checkoutOptions
         self.specChecksums = specChecksums
+        self.swiftPackages = swiftPackages
         self.podfileChecksum = podfileChecksum
         self.cocoapodsVersion = cocoapodsVersion
     }
@@ -123,6 +146,18 @@ public struct Lockfile: Sendable, Equatable {
             }
             return result
         }
+        var swiftPackages: [SwiftPackage] = []
+        for (url, value) in root["SWIFT PACKAGES"] as? [String: Any] ?? [:] {
+            guard let fields = value as? [String: Any],
+                  let requirement = fields["requirement"].map({ "\($0)" }),
+                  let version = fields["version"].flatMap({ Version("\($0)") }),
+                  let revision = fields["revision"].map({ "\($0)" })
+            else { throw ParseError(message: "invalid SWIFT PACKAGES entry `\(url)`") }
+            swiftPackages.append(SwiftPackage(
+                url: url, requirement: requirement, version: version, revision: revision,
+                pods: (fields["pods"] as? [Any] ?? []).map { "\($0)" }
+            ))
+        }
         self.init(
             pods: pods,
             dependencies: (root["DEPENDENCIES"] as? [Any] ?? []).map { "\($0)" },
@@ -130,6 +165,7 @@ public struct Lockfile: Sendable, Equatable {
             externalSources: stringMap(root["EXTERNAL SOURCES"]),
             checkoutOptions: stringMap(root["CHECKOUT OPTIONS"]),
             specChecksums: (root["SPEC CHECKSUMS"] as? [String: Any] ?? [:]).mapValues { "\($0)" },
+            swiftPackages: swiftPackages.sorted { $0.url < $1.url },
             podfileChecksum: root["PODFILE CHECKSUM"].map { "\($0)" },
             cocoapodsVersion: root["COCOAPODS"].map { "\($0)" } ?? Self.compatibleCocoaPodsVersion
         )
@@ -170,6 +206,17 @@ public struct Lockfile: Sendable, Equatable {
         section("EXTERNAL SOURCES", nested(externalSources))
         section("CHECKOUT OPTIONS", nested(checkoutOptions))
         section("SPEC CHECKSUMS", YAMLWriter.sortedKeys(specChecksums).map { "  \(YAMLWriter.scalar($0)): \(YAMLWriter.scalar(specChecksums[$0]!))" })
+        let packagesByURL = Dictionary(swiftPackages.map { ($0.url, $0) }, uniquingKeysWith: { first, _ in first })
+        section("SWIFT PACKAGES", YAMLWriter.sortedKeys(packagesByURL).flatMap { url in
+            let package = packagesByURL[url]!
+            return ["  \(YAMLWriter.scalar(url)):", "    pods:"]
+                + YAMLWriter.sorted(package.pods).map { "      - \(YAMLWriter.scalar($0))" }
+                + [
+                    "    requirement: \(YAMLWriter.scalar(package.requirement))",
+                    "    revision: \(YAMLWriter.scalar(package.revision))",
+                    "    version: \(YAMLWriter.scalar("\(package.version)"))",
+                ]
+        })
         if let podfileChecksum { sections.append("PODFILE CHECKSUM: \(YAMLWriter.scalar(podfileChecksum))") }
         sections.append("COCOAPODS: \(YAMLWriter.scalar(cocoapodsVersion))")
         return sections.joined(separator: "\n\n") + "\n"

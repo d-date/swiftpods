@@ -1,3 +1,4 @@
+import Foundation
 import PodsCore
 @testable import PodsLockfile
 import Testing
@@ -54,6 +55,31 @@ struct LockfileTests {
     @Test func roundTripIsByteIdentical() throws {
         let lockfile = try Lockfile(yaml: sampleLockfile)
         #expect(lockfile.yaml == sampleLockfile)
+    }
+
+    @Test func swiftPackagesRoundTrip() throws {
+        let yaml = sampleLockfile.replacingOccurrences(of: "PODFILE CHECKSUM", with: """
+        SWIFT PACKAGES:
+          https://github.com/google/GoogleUtilities.git:
+            pods:
+              - GoogleUtilities
+            requirement: "< 8.1.1, >= 8.0.0"
+            revision: 60da361632d0a91e1d6d4b0e1b3c3d0e9d0e5c0a
+            version: 8.1.0
+
+        PODFILE CHECKSUM
+        """)
+        let lockfile = try Lockfile(yaml: yaml)
+        #expect(lockfile.swiftPackages.count == 1)
+        #expect(lockfile.swiftPackages[0].pods == ["GoogleUtilities"])
+        #expect(lockfile.swiftPackages[0].version == Version(8, 1, 0))
+        #expect(lockfile.yaml == yaml)
+    }
+
+    @Test func omitsSwiftPackagesSectionWhenEmpty() throws {
+        let lockfile = try Lockfile(yaml: sampleLockfile)
+        #expect(lockfile.swiftPackages.isEmpty)
+        #expect(!lockfile.yaml.contains("SWIFT PACKAGES"))
     }
 
     @Test func queries() throws {

@@ -16,7 +16,7 @@ Legend: ✅ supported · ⚠️ partial · ❌ not supported
 | `*.podspec` (Ruby DSL) | ✅ | |
 | `*.podspec.json` | ✅ | Canonical format |
 | `*.podspec.swift` | ✅ | SwiftPods extension; `spec json` converts it for trunk |
-| `Podfile.lock` / `Pods/Manifest.lock` | ✅ | Byte-identical output, including `SPEC CHECKSUMS`; the `COCOAPODS:` version of an existing lockfile is kept |
+| `Podfile.lock` / `Pods/Manifest.lock` | ✅ | Byte-identical output, including `SPEC CHECKSUMS`; the `COCOAPODS:` version of an existing lockfile is kept. SwiftPods may add a `SWIFT PACKAGES:` section (only when the Podfile declares SwiftPM packages); how CocoaPods treats that section was not verified (`pod` was not available) |
 
 ## Podfile DSL
 
