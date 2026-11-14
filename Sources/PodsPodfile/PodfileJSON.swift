@@ -20,6 +20,13 @@ extension Podfile {
             installationOptions: options,
             root: try Self.targetDefinition(rootJSON)
         )
+        self.swiftPackages = try Self.swiftPackages(json["swift_packages"])
+        let declared = Set(swiftPackages.map(\.identity))
+        for definition in allTargetDefinitions {
+            for product in definition.packageProducts where !declared.contains(product.package.lowercased()) {
+                throw FormatError(message: "product `\(product.name)` of target `\(definition.name)` refers to the undeclared package `\(product.package)`")
+            }
+        }
         self.plugins = json["plugins"]?.object?.keys ?? []
         self.unsupportedHooks = json["hooks"]?.stringList ?? []
     }
@@ -67,10 +74,30 @@ extension Podfile {
         for entry in json["dependencies"]?.array ?? [] {
             definition.dependencies += try dependencies(entry)
         }
+        for entry in json["swift_package_products"]?.array ?? [] {
+            guard let name = entry["name"]?.string, let package = entry["package"]?.string else {
+                throw FormatError(message: "invalid `swift_package_products` entry")
+            }
+            definition.packageProducts.append(PackageProductDependency(name: name, package: package))
+        }
         for child in json["children"]?.array ?? [] {
             definition.children.append(try targetDefinition(child))
         }
         return definition
+    }
+
+    private static func swiftPackages(_ json: JSON?) throws(FormatError) -> [SwiftPackageDependency] {
+        var result: [SwiftPackageDependency] = []
+        for entry in json?.array ?? [] {
+            guard let url = entry["url"]?.string else { throw FormatError(message: "swift package without a `url`") }
+            let constraints = entry["requirement"]?.stringList ?? []
+            do {
+                result.append(SwiftPackageDependency(url: url, requirement: try Requirement(parsing: constraints)))
+            } catch {
+                throw FormatError(message: "invalid requirement for package `\(url)`: \(constraints.joined(separator: ", "))")
+            }
+        }
+        return result
     }
 
     /// Parses `"Name"` or `{"Name": ["~> 1.0", {"git": "...", "configurations": [...]}]}`.

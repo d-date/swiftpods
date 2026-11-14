@@ -1,6 +1,7 @@
 import Foundation
 import PodsCore
 @testable import PodsManifest
+import PodsPodfile
 import Testing
 
 /// These tests invoke the Swift compiler, so they are slower than the rest of the suite.
@@ -71,6 +72,33 @@ struct SwiftManifestTests {
         let tests = try #require(children[0]["children"]?.array?.first)
         #expect(tests["inheritance"]?.string == "search_paths")
         #expect(tests["dependencies"]?.array?.first?.string == "Quick")
+    }
+
+    @Test func evaluatesPodfileWithSwiftPackages() async throws {
+        let url = try write("Podfile.swift", """
+        import SwiftPodsDescription
+
+        let podfile = Podfile(
+            platform: .iOS(.v15),
+            packages: [
+                .package(url: "https://github.com/google/GoogleUtilities.git", from: "8.0.0"),
+                .package(url: "https://github.com/firebase/nanopb.git", .upToNextMinor(from: "2.30910.0")),
+                .package(url: "https://github.com/google/gtm-session-fetcher.git", "3.3.2"..<"4.0.0"),
+            ],
+            targets: [.target(name: "App", dependencies: [
+                .pod(name: "MLKitBarcodeScanning", "~> 8.0"),
+                .product(name: "GULLogger", package: "GoogleUtilities"),
+            ])]
+        )
+        """)
+        let json = try await evaluator.evaluatePodfile(at: url)
+        let podfile = try Podfile(json: json)
+        #expect(podfile.swiftPackages.map(\.identity) == ["googleutilities", "nanopb", "gtm-session-fetcher"])
+        #expect(podfile.swiftPackages.map(\.requirement.lockfileDescription)
+            == ["(< 9.0.0, >= 8.0.0)", "(< 2.30911.0, >= 2.30910.0)", "(< 4.0.0, >= 3.3.2)"])
+        let target = try #require(podfile.resolvedTargets.first)
+        #expect(target.dependencies.map(\.name) == ["MLKitBarcodeScanning"])
+        #expect(target.packageProducts == [PackageProductDependency(name: "GULLogger", package: "GoogleUtilities")])
     }
 
     @Test func evaluatesPodspec() async throws {

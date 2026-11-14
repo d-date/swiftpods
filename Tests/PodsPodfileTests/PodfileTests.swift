@@ -75,6 +75,18 @@ struct PodfileTests {
         }
     }
 
+    @Test func rejectsProductOfUndeclaredPackage() throws {
+        let json = try JSON(parsing: """
+        {"swift_packages":[],"target_definitions":[{"name":"Pods","abstract":true,"children":[{"name":"App",
+        "swift_package_products":[{"name":"X","package":"Missing"}]}]}]}
+        """)
+        #expect {
+            _ = try Podfile(json: json)
+        } throws: { error in
+            (error as? Podfile.FormatError)?.message.contains("`Missing`") == true
+        }
+    }
+
     @Test func podfileJSONFromCocoaPods() throws {
         // Output of `pod ipc podfile-json` for a small Podfile.
         let json = try JSON(parsing: """

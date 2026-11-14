@@ -39,6 +39,8 @@ public final class Podfile {
     public var workspace: String?
     /// `install! 'cocoapods', ...`
     public var installationOptions: InstallationOptions
+    /// SwiftPM packages resolved together with the pods.
+    public var packages: [SwiftPackage]
     /// Pods linked into every target.
     public var dependencies: [Pod]
     public var targets: [Target]
@@ -52,6 +54,7 @@ public final class Podfile {
         project: Project? = nil,
         workspace: String? = nil,
         installationOptions: InstallationOptions = .init(),
+        packages: [SwiftPackage] = [],
         dependencies: [Pod] = [],
         targets: [Target] = []
     ) {
@@ -63,6 +66,7 @@ public final class Podfile {
         self.project = project
         self.workspace = workspace
         self.installationOptions = installationOptions
+        self.packages = packages
         self.dependencies = dependencies
         self.targets = targets
         _ManifestRegistry.register(.podfile(self))
@@ -82,6 +86,7 @@ public final class Podfile {
             useModularHeaders: useModularHeaders ? true : nil, inhibitAllWarnings: inhibitAllWarnings ? true : nil,
             project: project, dependencies: dependencies, targets: targets
         )
+        if !packages.isEmpty { object.append(("swift_packages", .array(packages.map(\.json)))) }
         object.append(("target_definitions", .array([root.json])))
         return .object(object)
     }
@@ -340,9 +345,49 @@ public struct Target: Sendable {
                 object.append(("build_configurations", .object(sorted.map { ($0.key, .string($0.value.rawValue)) })))
             }
         }
-        if !dependencies.isEmpty { object.append(("dependencies", .array(dependencies.map(\.json)))) }
+        let pods = dependencies.filter { $0.productPackage == nil }
+        let products = dependencies.filter { $0.productPackage != nil }
+        if !pods.isEmpty { object.append(("dependencies", .array(pods.map(\.json)))) }
+        if !products.isEmpty { object.append(("swift_package_products", .array(products.map(\.productJSON)))) }
         if !targets.isEmpty { object.append(("children", .array(targets.map(\.json)))) }
         return .object(object)
+    }
+}
+
+// MARK: - Swift packages
+
+/// A SwiftPM package that is resolved together with the pods (`.package(url:from:)`).
+public struct SwiftPackage: Sendable {
+    let url: String
+    let requirement: [String]
+
+    /// `from: "8.0.0"` — up to the next major version, like SwiftPM.
+    public static func package(url: String, from version: String) -> SwiftPackage {
+        .package(url: url, .upToNextMajor(from: version))
+    }
+
+    /// `exact: "8.0.0"`
+    public static func package(url: String, exact version: String) -> SwiftPackage {
+        .package(url: url, .exact(version))
+    }
+
+    /// `"1.0.0"..<"2.0.0"`
+    public static func package(url: String, _ range: Range<String>) -> SwiftPackage {
+        .package(url: url, .range(range))
+    }
+
+    /// `"1.0.0"..."1.9.9"`
+    public static func package(url: String, _ range: ClosedRange<String>) -> SwiftPackage {
+        .package(url: url, .range(range))
+    }
+
+    /// Any requirement, e.g. `.upToNextMinor(from: "1.2.0")`.
+    public static func package(url: String, _ requirement: VersionRequirement) -> SwiftPackage {
+        SwiftPackage(url: url, requirement: requirement.constraints)
+    }
+
+    var json: _JSON {
+        .object([("url", .string(url)), ("requirement", .array(requirement.map(_JSON.string)))])
     }
 }
 
@@ -402,9 +447,12 @@ public struct Pod: Sendable {
     public var testSpecs: [String]
     /// A specific spec source to take the pod from.
     public var source: String?
+    /// Set for `.product(name:package:)`: the package the product comes from. `name` is the product name.
+    var productPackage: String?
 
     init(name: String, requirement: [String], externalSource: [(String, _JSON)], configurations: [String],
-         modularHeaders: Bool?, inhibitWarnings: Bool?, subspecs: [String], testSpecs: [String], source: String?) {
+         modularHeaders: Bool?, inhibitWarnings: Bool?, subspecs: [String], testSpecs: [String], source: String?,
+         productPackage: String? = nil) {
         self.name = name
         self.requirement = requirement
         self.externalSource = externalSource
@@ -414,6 +462,17 @@ public struct Pod: Sendable {
         self.subspecs = subspecs
         self.testSpecs = testSpecs
         self.source = source
+        self.productPackage = productPackage
+    }
+
+    /// A product of a SwiftPM package declared in `Podfile.packages`.
+    public static func product(name: String, package: String) -> Pod {
+        Pod(name: name, requirement: [], externalSource: [], configurations: [], modularHeaders: nil,
+            inhibitWarnings: nil, subspecs: [], testSpecs: [], source: nil, productPackage: package)
+    }
+
+    var productJSON: _JSON {
+        .object([("name", .string(name)), ("package", .string(productPackage ?? ""))])
     }
 
     /// A pod from a spec source with a CocoaPods requirement (`"~> 5.9"`) or any SwiftPM-style requirement.

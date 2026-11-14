@@ -17,6 +17,35 @@ public struct PodDependency: Sendable, Hashable {
     public var name: String { dependency.name }
 }
 
+/// A SwiftPM package declared in the Podfile (`packages:`).
+public struct SwiftPackageDependency: Sendable, Hashable {
+    public let url: String
+    public let requirement: Requirement
+
+    public init(url: String, requirement: Requirement) {
+        self.url = url
+        self.requirement = requirement
+    }
+
+    /// The SwiftPM identity: the last path component of the URL without `.git`, lowercased.
+    public var identity: String {
+        var name = url.lastPathComponent
+        if name.hasSuffix(".git") { name = String(name.dropLast(4)) }
+        return name.lowercased()
+    }
+}
+
+/// A product of a declared SwiftPM package that a target links (`.product(name:package:)`).
+public struct PackageProductDependency: Sendable, Hashable {
+    public let name: String
+    public let package: String
+
+    public init(name: String, package: String) {
+        self.name = name
+        self.package = package
+    }
+}
+
 /// How a child target inherits from its parent (`inherit!`).
 public enum Inheritance: String, Sendable, Hashable {
     case complete
@@ -47,6 +76,7 @@ public struct TargetDefinition: Sendable, Hashable {
     /// Build configuration name → `debug` / `release`.
     public var buildConfigurations: [String: String] = [:]
     public var dependencies: [PodDependency] = []
+    public var packageProducts: [PackageProductDependency] = []
     public var children: [TargetDefinition] = []
 
     public init(name: String, isAbstract: Bool) {
@@ -68,6 +98,8 @@ public struct ResolvedTarget: Sendable, Hashable {
     public let buildConfigurations: [String: String]
     /// Pods linked into the target (own plus inherited with `:complete`).
     public let dependencies: [PodDependency]
+    /// SwiftPM package products linked into the target (own plus inherited with `:complete`).
+    public let packageProducts: [PackageProductDependency]
     /// Labels of ancestor targets whose pods are only visible through search paths.
     public let searchPathsTargets: [String]
     /// The path of target names from the root, used for aggregate target naming.
@@ -85,6 +117,8 @@ public struct Podfile: Sendable, Hashable {
     public var workspacePath: String?
     public var installationOptions: [String: JSON]
     public var root: TargetDefinition
+    /// SwiftPM packages resolved together with the pods.
+    public var swiftPackages: [SwiftPackageDependency] = []
     /// Ruby hooks (`post_install`, ...) that were declared but cannot be run.
     public var unsupportedHooks: [String] = []
     /// Plugins (`plugin 'cocoapods-keys'`) that were declared but are not supported.
@@ -147,7 +181,14 @@ public struct Podfile: Sendable, Hashable {
             guard chain.count > 1, node.inheritance == .complete else { return node.dependencies }
             return node.dependencies + linked(chain.dropLast())
         }
+        func linkedProducts(_ chain: ArraySlice<TargetDefinition>) -> [PackageProductDependency] {
+            let node = chain.last!
+            guard chain.count > 1, node.inheritance == .complete else { return node.packageProducts }
+            return node.packageProducts + linkedProducts(chain.dropLast())
+        }
         let dependencies = linked(chain[...])
+        var seenProducts = Set<PackageProductDependency>()
+        let uniqueProducts = linkedProducts(chain[...]).filter { seenProducts.insert($0).inserted }
         var searchPaths: [String] = []
         if definition.inheritance == .searchPaths,
            let host = chain.dropLast().lastIndex(where: { !$0.isAbstract }) {
@@ -167,6 +208,7 @@ public struct Podfile: Sendable, Hashable {
             userProjectPath: inherited(\.userProjectPath),
             buildConfigurations: chain.reduce(into: [:]) { $0.merge($1.buildConfigurations) { $1 } },
             dependencies: uniqueDependencies,
+            packageProducts: uniqueProducts,
             searchPathsTargets: searchPaths,
             path: chain.map(\.name)
         )

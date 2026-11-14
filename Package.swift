@@ -76,7 +76,7 @@ let package = Package(
         .testTarget(name: "PodsDSLTests", dependencies: ["PodsDSL"]),
         .testTarget(name: "PodsSpecTests", dependencies: ["PodsSpec"], resources: [.copy("Fixtures")]),
         .testTarget(name: "PodsPodfileTests", dependencies: ["PodsPodfile", "PodsManifest"]),
-        .testTarget(name: "PodsManifestTests", dependencies: ["PodsManifest", "SwiftPodsDescription"]),
+        .testTarget(name: "PodsManifestTests", dependencies: ["PodsManifest", "PodsPodfile", "SwiftPodsDescription"]),
         .testTarget(name: "PodsLockfileTests", dependencies: ["PodsLockfile"]),
         .testTarget(name: "PodsSourcesTests", dependencies: ["PodsSources"]),
         .testTarget(name: "PodsResolverTests", dependencies: ["PodsResolver"]),
