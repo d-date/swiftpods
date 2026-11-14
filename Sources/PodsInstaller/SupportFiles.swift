@@ -253,8 +253,8 @@ enum SupportFiles {
           if ! [ -r "$binary" ]; then
             binary="${destination}/${basename}"
           fi
-          # Static frameworks don't need to be embedded or signed.
-          if [ -r "$binary" ] && file "$binary" | grep -q "current ar archive"; then
+          # Static frameworks (archives or relocatable objects) don't need to be embedded or signed.
+          if [ -r "$binary" ] && ! file "$binary" | grep -q "dynamically linked shared library"; then
             rm -rf "${destination}/${basename}.framework"
             return
           fi
