@@ -59,36 +59,40 @@ struct PackageUnifier {
         }
 
         var unifications: [Unification] = []
-        // Sorted so that the first conflict reported does not depend on dictionary order.
+        // Sorted so that the first error reported does not depend on dictionary order.
         for (index, matchedPods) in podsByPackage.sorted(by: { packages[$0.key].url < packages[$1.key].url }) {
             let package = packages[index]
-            // Commits each pod accepts: those of its versions that satisfy every requirement on it.
-            let acceptedCommits = matchedPods.map { pod in
-                Set(pod.commits.filter { version, _ in
-                    pod.requirements.allSatisfy { $0.requirement.isSatisfied(by: version) }
-                }.values)
+            // Several pods built from one package (a monorepo) would need every product of the package mapped to its pod.
+            guard matchedPods.count == 1, let pod = matchedPods.first else {
+                throw PodsError(
+                    "Pods " + matchedPods.map { "'\($0.root)'" }.sorted().joined(separator: ", ")
+                        + " are all the same library as Swift package \(package.url); "
+                        + "unifying several pods with one package is not supported yet."
+                )
             }
+            // Commits the pod accepts: those of its versions that satisfy every requirement on it.
+            let acceptedCommits = Set(pod.commits.filter { version, _ in
+                pod.requirements.allSatisfy { $0.requirement.isSatisfied(by: version) }
+            }.values)
             let allowed = package.commits
                 .filter { version, commit in
                     !version.isPreRelease
                         && package.podfileRequirement?.isSatisfied(by: version) != false
-                        && acceptedCommits.allSatisfy { $0.contains(commit) }
+                        && acceptedCommits.contains(commit)
                 }
                 .keys
                 .sorted()
             guard let lowest = allowed.first, let highest = allowed.last else {
-                throw conflict(pods: matchedPods, package: package)
+                throw conflict(pod: pod, package: package)
             }
-            for pod in matchedPods {
-                unifications.append(Unification(
-                    podRoot: pod.root,
-                    packageURL: package.url,
-                    allowedVersions: allowed,
-                    lowerBound: lowest,
-                    upperBound: Version(highest.major, highest.minor, highest.patch + 1),
-                    allowedCommits: Set(allowed.compactMap { package.commits[$0] })
-                ))
-            }
+            unifications.append(Unification(
+                podRoot: pod.root,
+                packageURL: package.url,
+                allowedVersions: allowed,
+                lowerBound: lowest,
+                upperBound: Version(highest.major, highest.minor, highest.patch + 1),
+                allowedCommits: Set(allowed.compactMap { package.commits[$0] })
+            ))
         }
         return unifications.sorted { $0.podRoot < $1.podRoot }
     }
@@ -111,16 +115,26 @@ struct PackageUnifier {
         }
     }
 
-    private static func conflict(pods: [PodCandidate], package: PackageCandidate) -> PodsError {
-        let roots = pods.map { "'\($0.root)'" }.sorted().joined(separator: ", ")
+    /// The second resolution only narrows ranges, but a narrowed version may depend on packages the first one did not have.
+    /// Those were never matched against the pods, so a pod might be the same library and end up linked twice.
+    static func verifyNoNewPackages(first: [SwiftPackageResolver.Pin], second: [SwiftPackageResolver.Pin]) throws(PodsError) {
+        let known = Set(first.map(\.identity))
+        let added = second.filter { !known.contains($0.identity) }.map(\.url).sorted()
+        guard added.isEmpty else {
+            throw PodsError(
+                "Narrowing the Swift packages to the versions the pods accept brought in packages that were not matched "
+                    + "against the pods: \(added.joined(separator: ", ")). Matching them again is not supported yet."
+            )
+        }
+    }
+
+    private static func conflict(pod: PodCandidate, package: PackageCandidate) -> PodsError {
         var lines = [
-            "No version of Swift package \(package.url) satisfies every requirement on pod \(roots) "
+            "No version of Swift package \(package.url) satisfies every requirement on pod '\(pod.root)' "
                 + "(only versions tagged at the same commit as an acceptable pod version are allowed):",
         ]
-        for pod in pods.sorted(by: { $0.root < $1.root }) {
-            for (origin, requirement) in pod.requirements {
-                lines.append("  - \(origin) requires \(pod.root) \(describe(requirement))")
-            }
+        for (origin, requirement) in pod.requirements {
+            lines.append("  - \(origin) requires \(pod.root) \(describe(requirement))")
         }
         if let podfileRequirement = package.podfileRequirement {
             lines.append("  - Podfile.swift requires \(package.identity) \(describe(podfileRequirement))")

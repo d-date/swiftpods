@@ -158,44 +158,45 @@ struct PackageUnifierTests {
         #expect(error?.message.contains("MLKitCommon requires GoogleUtilities (~> 8.0)") == true)
     }
 
-    @Test func intersectsAllowedVersionsOfPodsSharingAPackage() throws {
+    @Test func rejectsSeveralPodsMatchingOnePackage() throws {
+        // A monorepo publishing several pods that are all one package: not supported yet.
         let package = PackageUnifier.PackageCandidate(
             url: "https://github.com/google/GoogleUtilities.git",
             identity: "googleutilities",
             podfileRequirement: nil,
-            commits: [Version(8, 0, 0): "c0", Version(8, 1, 0): "c1", Version(8, 2, 0): "c2"]
+            commits: [Version(8, 0, 0): "c0", Version(8, 1, 0): "c1"]
         )
-        let commits = [Version(8, 0, 0): "c0", Version(8, 1, 0): "c1", Version(8, 2, 0): "c2"]
+        let commits = [Version(8, 0, 0): "c0", Version(8, 1, 0): "c1"]
         let logger = PackageUnifier.PodCandidate(
             root: "GoogleUtilitiesLogger",
-            requirements: [(origin: "MLKitCommon", requirement: try Requirement(parsing: ">= 8.1"))],
+            requirements: [(origin: "MLKitCommon", requirement: .any)],
             commits: commits,
             repository: nil
         )
         let environment = PackageUnifier.PodCandidate(
             root: "GoogleUtilitiesEnvironment",
-            requirements: [(origin: "MLKitVision", requirement: try Requirement(parsing: "< 8.2"))],
-            commits: commits,
-            repository: nil
-        )
-        let result = try PackageUnifier.unify(pods: [logger, environment], packages: [package])
-        #expect(result.map(\.podRoot) == ["GoogleUtilitiesEnvironment", "GoogleUtilitiesLogger"])
-        #expect(result.allSatisfy { $0.allowedVersions == [Version(8, 1, 0)] })
-        #expect(result.allSatisfy { $0.lowerBound == Version(8, 1, 0) && $0.upperBound == Version(8, 1, 1) })
-
-        let strict = PackageUnifier.PodCandidate(
-            root: "GoogleUtilitiesEnvironment",
-            requirements: [(origin: "MLKitVision", requirement: try Requirement(parsing: "< 8.1"))],
+            requirements: [(origin: "MLKitVision", requirement: .any)],
             commits: commits,
             repository: nil
         )
         let error = #expect(throws: PodsError.self) {
-            try PackageUnifier.unify(pods: [logger, strict], packages: [package])
+            try PackageUnifier.unify(pods: [logger, environment], packages: [package])
         }
         let message = error?.message ?? ""
-        #expect(message.contains("MLKitCommon requires GoogleUtilitiesLogger (>= 8.1)"))
-        #expect(message.contains("MLKitVision requires GoogleUtilitiesEnvironment (< 8.1)"))
+        #expect(message.contains("'GoogleUtilitiesEnvironment', 'GoogleUtilitiesLogger'"))
         #expect(message.contains("GoogleUtilities.git"))
+        #expect(message.contains("not supported yet"))
+    }
+
+    @Test func rejectsPackagesAddedBySecondResolution() throws {
+        func pin(_ identity: String) -> SwiftPackageResolver.Pin {
+            SwiftPackageResolver.Pin(identity: identity, url: "https://example.com/\(identity).git", version: Version(1, 0, 0), revision: "r")
+        }
+        try PackageUnifier.verifyNoNewPackages(first: [pin("a"), pin("b")], second: [pin("a")])
+        let error = #expect(throws: PodsError.self) {
+            try PackageUnifier.verifyNoNewPackages(first: [pin("a")], second: [pin("a"), pin("c")])
+        }
+        #expect(error?.message.contains("https://example.com/c.git") == true)
     }
 
     @Test func excludesPreReleasePackageVersions() throws {
