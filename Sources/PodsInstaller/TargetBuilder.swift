@@ -112,6 +112,14 @@ struct TargetBuilder {
                 }
                 products.append(PackageProductRef(packageURL: package.url, product: product.name))
             }
+            let buildType = BuildType(target.usesFrameworks)
+            // The aggregate links the products statically; a dynamic `Pods-<Target>` framework is not supported yet.
+            if buildType == .dynamicFramework, !products.isEmpty {
+                throw PodsError(
+                    "Target `\(target.name)` links Swift package products (\(products.map(\.product).joined(separator: ", "))), "
+                        + "which is not supported yet with dynamic frameworks. Use `use_frameworks! :linkage => :static` or static libraries."
+                )
+            }
             aggregates.append(AggregateTarget(
                 definition: target,
                 platform: analysis.targetPlatforms[target.name]!,
@@ -120,7 +128,7 @@ struct TargetBuilder {
                 userProject: projectURL,
                 clientRoot: projectURL?.deletingLastPathComponent() ?? projectDirectory,
                 buildConfigurations: info?.configurations ?? ["Debug", "Release"],
-                buildType: BuildType(target.usesFrameworks),
+                buildType: buildType,
                 packageProducts: products.reduce(into: []) { if !$0.contains($1) { $0.append($1) } }
             ))
         }

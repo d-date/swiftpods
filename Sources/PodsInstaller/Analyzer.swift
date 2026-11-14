@@ -229,7 +229,8 @@ struct Analyzer {
         var swiftPackages: SwiftPackageResolver.Result?
         if !podfile.swiftPackages.isEmpty {
             (unifications, swiftPackages) = try await ui.section("Resolving Swift packages") {
-                try await resolveSwiftPackages(podfile: podfile, pods: resolved, externals: externals, platforms: platforms, sources: sources)
+                try await resolveSwiftPackages(podfile: podfile, lockfile: lockfile, pods: resolved, externals: externals, platforms: platforms,
+                                               sources: sources)
             }
         }
         return Resolution(podfile: podfile, lockfile: lockfile, userProjects: userProjects, targetProjects: targetProjects, targetPlatforms: platforms,
@@ -243,14 +244,16 @@ struct Analyzer {
     /// Resolves the declared packages, finds the pods that are the same library as a resolved package,
     /// and resolves again with those packages narrowed to the versions the pods accept.
     private func resolveSwiftPackages(
-        podfile: Podfile, pods: [ResolvedPod], externals: [String: FetchedExternal], platforms: [String: Platform], sources: SourcesManager
+        podfile: Podfile, lockfile: Lockfile?, pods: [ResolvedPod], externals: [String: FetchedExternal], platforms: [String: Platform],
+        sources: SourcesManager
     ) async throws -> ([PackageUnifier.Unification], SwiftPackageResolver.Result) {
         let pathHash = Insecure.SHA1.hash(data: Data(context.podfileURL.standardizedFileURL.path.utf8)).map { String(format: "%02x", $0) }.joined()
         let resolver = SwiftPackageResolver(
             workDirectory: context.cacheRoot.appendingPathComponent("SwiftPackages").appendingPathComponent(pathHash), shell: context.shell
         )
-        let resolvedFileURL = context.sandbox.projectURL.appendingPathComponent("project.xcworkspace/xcshareddata/swiftpm/Package.resolved")
-        let previousResolved = options.update == .none ? try? Data(contentsOf: resolvedFileURL) : nil
+        let previous = previousPins(lockfile: lockfile)
+        let previousResolved = SwiftPackageResolver.resolvedFile(pins: previous?.pins)
+        let pinned = Set(previous?.pins.map(\.identity) ?? [])
         let tagIndex = GitTagIndex(shell: context.shell)
 
         // Declared packages by identity.
@@ -258,8 +261,10 @@ struct Analyzer {
         for package in podfile.swiftPackages {
             requirements[package.identity] = (package.url, nil, nil, package.requirement)
         }
-        let first = try await resolver.resolve(requirements.sorted { $0.key < $1.key }.map(\.value), previousResolved: previousResolved,
+        let first = try await resolver.resolve(requirements.sorted { $0.key < $1.key }.map(\.value),
+                                               previousResolved: previousResolved, updating: (previous?.updating ?? []).sorted(),
                                                readingProducts: false)
+        try Self.rejectExternalPods(externals, from: podfile.swiftPackages.map(\.url) + first.pins.map(\.url))
 
         // Every package in the graph, including indirect ones, so that no library ends up linked twice.
         let packages = try await withThrowingTaskGroup(of: PackageUnifier.PackageCandidate.self) { group in
@@ -295,7 +300,14 @@ struct Analyzer {
             let identity = identities[unification.packageURL]!
             requirements[identity] = (unification.packageURL, unification.lowerBound, unification.upperBound, nil)
         }
-        let second = try await resolver.resolve(requirements.sorted { $0.key < $1.key }.map(\.value), previousResolved: previousResolved)
+        // `update <names>` also moves the packages the named pods are unified with now.
+        var updating = previous?.updating ?? []
+        if case .pods(let names) = options.update {
+            updating.formUnion(unifications.filter { names.contains($0.podRoot) }.map { identities[$0.packageURL]! }.filter(pinned.contains))
+        }
+        let second = try await resolver.resolve(requirements.sorted { $0.key < $1.key }.map(\.value), previousResolved: previousResolved,
+                                                updating: updating.sorted())
+        try PackageUnifier.verifyNoNewPackages(first: first.pins, second: second.pins)
         for unification in unifications {
             let identity = identities[unification.packageURL]!
             guard let pin = second.pins.first(where: { $0.identity == identity }) else {
@@ -304,6 +316,56 @@ struct Analyzer {
             try PackageUnifier.verify(unification, resolved: pin.version, revision: pin.revision)
         }
         return (unifications, second)
+    }
+
+    /// The pins the resolutions start from: those under `Pods/` or, when they are missing, the `SWIFT PACKAGES` of Podfile.lock,
+    /// so that the lockfile alone keeps the versions. `update` keeps none (`nil`); `update <names>` moves (`updating`) the pinned
+    /// packages the named pods were unified with and those whose identity is named.
+    private func previousPins(lockfile: Lockfile?) -> (pins: [SwiftPackageResolver.Pin], updating: Set<String>)? {
+        let names: Set<String>
+        switch options.update {
+        case .all: return nil
+        case .none: names = []
+        case .pods(let pods): names = pods
+        }
+        let resolvedFileURL = context.sandbox.projectURL.appendingPathComponent("project.xcworkspace/xcshareddata/swiftpm/Package.resolved")
+        let pins: [SwiftPackageResolver.Pin]
+        if let data = try? Data(contentsOf: resolvedFileURL), let resolved = try? SwiftPackageResolver.pins(fromResolved: data) {
+            pins = resolved
+        } else if let lockfile {
+            pins = lockfile.swiftPackages.map { package in
+                SwiftPackageResolver.Pin(identity: SwiftPackageDependency(url: package.url, requirement: .any).identity, url: package.url,
+                                         version: package.version, revision: package.revision)
+            }
+        } else {
+            return nil
+        }
+        var updating = Set(names.map { $0.lowercased() })
+        for package in lockfile?.swiftPackages ?? [] where !names.isDisjoint(with: package.pods) {
+            updating.insert(SwiftPackageDependency(url: package.url, requirement: .any).identity)
+        }
+        // Pod names that are not package identities are left out.
+        return (pins, updating.intersection(pins.map(\.identity)))
+    }
+
+    /// An external pod (`:git`, `:path`, `:podspec`) built from the repository of a Swift package would be linked twice,
+    /// and external pods are not unified.
+    private static func rejectExternalPods(_ externals: [String: FetchedExternal], from packageURLs: [String]) throws {
+        // SwiftPM records `file://` URLs as plain paths.
+        func key(_ url: String) -> String { PackageUnifier.normalize(url.hasPrefix("file://") ? String(url.dropFirst(7)) : url) }
+        var packages: [String: String] = [:]
+        for url in packageURLs where packages[key(url)] == nil { packages[key(url)] = url }
+        for (name, external) in externals.sorted(by: { $0.key < $1.key }) {
+            let repository: String? = switch external.source {
+            case .git(let url, _): url
+            case .path, .podspec: if case .git(let url, _, _)? = external.spec.source { url } else { nil }
+            }
+            guard let repository, let package = packages[key(repository)] else { continue }
+            throw PodsError(
+                "`\(name)` comes from \(repository), the repository of Swift package \(package), so the library would be linked twice. "
+                    + "Pods from external sources are not unified with Swift packages yet; use the pod from a spec source or drop it."
+            )
+        }
     }
 
     /// Pods from spec sources that may be the same library as one of `packages`, with every requirement on them

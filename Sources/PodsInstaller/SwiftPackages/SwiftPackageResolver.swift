@@ -26,10 +26,11 @@ struct SwiftPackageResolver {
         self.shell = shell
     }
 
-    /// `requirements` maps a package URL to its range. `previousResolved` is copied in first so pins are kept.
+    /// `requirements` maps a package URL to its range. `previousResolved` is copied in first so pins are kept,
+    /// except for the packages whose identities are in `updating`, which move to their newest versions.
     /// With `readingProducts: false`, `libraryProducts` is left empty (for a resolution that is not final).
     func resolve(_ requirements: [(url: String, lowerBound: Version?, upperBound: Version?, requirement: Requirement?)],
-                 previousResolved: Data?, readingProducts: Bool = true) async throws -> Result {
+                 previousResolved: Data?, updating: [String] = [], readingProducts: Bool = true) async throws -> Result {
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: workDirectory, withIntermediateDirectories: true)
         var dependencies: [String] = []
@@ -68,8 +69,10 @@ struct SwiftPackageResolver {
         }
 
         // Without pins, `update` fetches the repositories and picks the newest versions; `resolve` would
-        // keep the checkouts left in `.build` by an earlier run.
-        try await shell.run("swift", ["package", previousResolved == nil ? "update" : "resolve"], in: workDirectory)
+        // keep the checkouts left in `.build` by an earlier run (also for packages missing from the pins),
+        // so packages to move are named to `update` rather than dropped from the pins.
+        let arguments = previousResolved == nil ? ["update"] : updating.isEmpty ? ["resolve"] : ["update"] + updating
+        try await shell.run("swift", ["package"] + arguments, in: workDirectory)
         // SwiftPM writes no `Package.resolved` when there is nothing to pin.
         let resolvedFile = fileManager.fileExists(atPath: resolvedURL.path) ? try Data(contentsOf: resolvedURL) : Data()
         let pins = resolvedFile.isEmpty ? [] : try Self.pins(fromResolved: resolvedFile)
@@ -93,6 +96,23 @@ struct SwiftPackageResolver {
             return Pin(identity: identity, url: url, version: version, revision: revision)
         }
         .sorted { $0.identity < $1.identity }
+    }
+
+    /// A `Package.resolved` (format version 2) holding `pins`; `nil` when there are none, so that SwiftPM resolves from scratch.
+    static func resolvedFile(pins: [Pin]?) -> Data? {
+        guard let pins, !pins.isEmpty else { return nil }
+        let entries = pins.map { pin -> JSON in
+            // SwiftPM records local repositories (`file://` URLs) by path.
+            let path = pin.url.hasPrefix("file://") ? String(pin.url.dropFirst(7)) : pin.url
+            return .object(OrderedObject([
+                ("identity", .string(pin.identity)),
+                ("kind", .string(path.hasPrefix("/") ? "localSourceControl" : "remoteSourceControl")),
+                ("location", .string(path)),
+                ("state", .object(OrderedObject([("revision", .string(pin.revision)), ("version", .string(pin.version.description))]))),
+            ]))
+        }
+        let json = JSON.object(OrderedObject([("pins", .array(entries)), ("version", .number(2))]))
+        return Data((json.serialized() + "\n").utf8)
     }
 
     /// Library products of every package of the last resolution, read from each checkout's manifest.

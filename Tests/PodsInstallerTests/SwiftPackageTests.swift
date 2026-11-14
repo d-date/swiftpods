@@ -16,6 +16,7 @@ struct SwiftPackageFixture {
     /// `file://` URL of `Wrapper`, a package depending on `Lib` `from: "1.0.0"`.
     let wrapperURL: String
     let libDirectory: URL
+    let wrapperDirectory: URL
 
     /// Creates `Repos/Lib`, `Repos/Wrapper` and the `:path` pod `LocalPods/Binary` (which requires `Lib ~> 1.0`).
     static func create(in root: URL) async throws -> SwiftPackageFixture {
@@ -67,13 +68,19 @@ struct SwiftPackageFixture {
         """, to: root.appendingPathComponent("LocalPods/Binary/Binary.podspec.json"))
         try write("int BinaryValue(void) { return 2; }\n", to: root.appendingPathComponent("LocalPods/Binary/Binary.m"))
 
-        return SwiftPackageFixture(libURL: "file://" + lib.path, wrapperURL: "file://" + wrapper.path, libDirectory: lib)
+        return SwiftPackageFixture(libURL: "file://" + lib.path, wrapperURL: "file://" + wrapper.path, libDirectory: lib, wrapperDirectory: wrapper)
     }
 
     /// Adds a commit to `Lib` tagged `1.0.1` and `CocoaPods-1.0.1`.
     func addLibPatchRelease() async throws {
         try Self.write("int LibValue(void);\nint LibPatch(void);\n", to: libDirectory.appendingPathComponent("include/Lib.h"))
         try await Self.commit(libDirectory, tags: ["1.0.1", "CocoaPods-1.0.1"])
+    }
+
+    /// Adds a commit to `Wrapper` tagged `1.0.1`.
+    func addWrapperPatchRelease() async throws {
+        try Self.write("public let wrapped = 2\n", to: wrapperDirectory.appendingPathComponent("Sources/Wrapper/Wrapper.swift"))
+        try await Self.commit(wrapperDirectory, tags: ["1.0.1"])
     }
 
     /// The spec of pod `Lib` at `version`, downloaded from the `CocoaPods-<version>` tag.
@@ -110,9 +117,10 @@ struct SwiftPackageTests {
     }
 
     /// Writes `Podfile.json` with target `App` depending on `Binary` and the given `swift_packages`.
-    /// `products` are `swift_package_products` of `App`; `usesFrameworks` turns on `use_frameworks!` (dynamic).
+    /// `products` are `swift_package_products` of `App`; `usesFrameworks` turns on `use_frameworks!` (dynamic);
+    /// `dependencies` are more dependency entries of `App`, as JSON.
     private func writePodfile(packages: [(url: String, requirement: [String])], products: [(name: String, package: String)] = [],
-                              usesFrameworks: Bool = false) throws {
+                              usesFrameworks: Bool = false, dependencies: [String] = []) throws {
         let packagesJSON = packages.map { package in
             #"{"url":"\#(package.url)","requirement":[\#(package.requirement.map { #""\#($0)""# }.joined(separator: ","))]}"#
         }.joined(separator: ",")
@@ -121,7 +129,7 @@ struct SwiftPackageTests {
         {"swift_packages":[\(packagesJSON)],
          "target_definitions":[{"name":"Pods","abstract":true,"platform":{"ios":"16.0"},"children":[
            {"name":"App","uses_frameworks":\(usesFrameworks),"swift_package_products":[\(productsJSON)],
-            "dependencies":[{"Binary":[{"path":"LocalPods/Binary"}]}]}]}]}
+            "dependencies":[\(([#"{"Binary":[{"path":"LocalPods/Binary"}]}"#] + dependencies).joined(separator: ","))]}]}]}
         """.write(to: root.appendingPathComponent("Podfile.json"), atomically: true, encoding: .utf8)
     }
 
@@ -277,15 +285,19 @@ struct SwiftPackageTests {
         #expect(wrapper.requirement == "(< 2.0.0, >= 1.0.0)")
     }
 
-    @Test func indirectNonUnifiedPinHasEmptyRequirement() async throws {
-        // `Lib` is only reached through `Wrapper` and no pod uses it, so it has no package reference.
-        let fixture = try await SwiftPackageFixture.create(in: root)
-        try writePodfile(packages: [(fixture.wrapperURL, [">= 1.0.0", "< 2.0.0"])])
-        try FileManager.default.removeItem(at: root.appendingPathComponent("LocalPods/Binary/Binary.podspec.json"))
+    /// Rewrites `Binary` without its dependency on `Lib`.
+    private func removeBinaryDependencies() throws {
         try """
         {"name":"Binary","version":"1.0.0","platforms":{"ios":"12.0"},"source":{"git":"https://example.com/Binary.git","tag":"1.0.0"},
          "source_files":"*.m"}
         """.write(to: root.appendingPathComponent("LocalPods/Binary/Binary.podspec.json"), atomically: true, encoding: .utf8)
+    }
+
+    @Test func indirectNonUnifiedPinHasEmptyRequirement() async throws {
+        // `Lib` is only reached through `Wrapper` and no pod uses it, so it has no package reference.
+        let fixture = try await SwiftPackageFixture.create(in: root)
+        try writePodfile(packages: [(fixture.wrapperURL, [">= 1.0.0", "< 2.0.0"])])
+        try removeBinaryDependencies()
         try await Installer(context: try context(specs: [fixture.libSpec("1.0.0")]), options: InstallOptions()).install()
 
         let lockfile = try Lockfile(contentsOf: root.appendingPathComponent("Podfile.lock"))
@@ -303,6 +315,75 @@ struct SwiftPackageTests {
         }
         #expect(error?.message.contains("dynamic frameworks") == true)
         #expect(error?.message.contains("Binary") == true)
+    }
+
+    /// `Pods-App` links the products itself, so a dynamic aggregate is rejected too, whether the products come from
+    /// a direct dependency on a unified pod or from `.product(name:package:)`.
+    @Test(arguments: [false, true])
+    func rejectsAggregateProductsWithDynamicFrameworks(declaredProduct: Bool) async throws {
+        let fixture = try await SwiftPackageFixture.create(in: root)
+        try removeBinaryDependencies()
+        if declaredProduct {
+            try writePodfile(packages: [(fixture.wrapperURL, [">= 1.0.0", "< 2.0.0"])], products: [("Wrapper", "Wrapper")], usesFrameworks: true)
+        } else {
+            try writePodfile(packages: [(fixture.libURL, [">= 1.0.0", "< 2.0.0"])], usesFrameworks: true, dependencies: [#"{"Lib":["~> 1.0"]}"#])
+        }
+        let error = await #expect(throws: PodsError.self) {
+            try await Installer(context: try context(specs: [fixture.libSpec("1.0.0"), fixture.libSpec("2.0.0")]), options: InstallOptions()).install()
+        }
+        #expect(error?.message.contains("dynamic frameworks") == true)
+        #expect(error?.message.contains("`App`") == true)
+        #expect(error?.message.contains(declaredProduct ? "Wrapper" : "LibCore") == true)
+    }
+
+    /// An external pod built from the repository of a Swift package would be linked twice.
+    @Test(arguments: ["path", "git"])
+    func rejectsExternalPodFromPackageRepository(kind: String) async throws {
+        let fixture = try await SwiftPackageFixture.create(in: root)
+        // `Repos/Lib/Lib.podspec` has `source` `:git => <libURL>`.
+        let source = kind == "path" ? "Repos/Lib" : fixture.libURL
+        try writePodfile(packages: [(fixture.libURL, [">= 1.0.0", "< 2.0.0"])], dependencies: [#"{"Lib":[{"\#(kind)":"\#(source)"}]}"#])
+        let error = await #expect(throws: PodsError.self) {
+            try await analyze(specs: [])
+        }
+        #expect(error?.message.contains("`Lib`") == true)
+        #expect(error?.message.contains(fixture.libURL) == true)
+    }
+
+    @Test func lockfileKeepsPinsWhenPodsDirectoryIsMissing() async throws {
+        let fixture = try await installUnifiedLib()
+        try FileManager.default.removeItem(at: root.appendingPathComponent("Pods"))
+        // 1.0.1 is allowed too, but `SWIFT PACKAGES` in Podfile.lock keeps 1.0.0.
+        try await fixture.addLibPatchRelease()
+        let specs = [fixture.libSpec("1.0.0"), fixture.libSpec("1.0.1"), fixture.libSpec("2.0.0")]
+        try await Installer(context: try context(specs: specs), options: InstallOptions()).install()
+        let lockfile = try Lockfile(contentsOf: root.appendingPathComponent("Podfile.lock"))
+        #expect(lockfile.swiftPackages.map(\.version) == [Version(1, 0, 0)])
+        let resolved = root.appendingPathComponent("Pods/Pods.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved")
+        #expect(try SwiftPackageResolver.pins(fromResolved: Data(contentsOf: resolved)).map(\.version) == [Version(1, 0, 0)])
+
+        try FileManager.default.removeItem(at: root.appendingPathComponent("Pods"))
+        try await Installer(context: try context(specs: specs), options: InstallOptions(deployment: true)).install()
+    }
+
+    @Test func updateOfNamedPodsKeepsOtherPins() async throws {
+        let fixture = try await SwiftPackageFixture.create(in: root)
+        try writePodfile(packages: [(fixture.wrapperURL, [">= 1.0.0", "< 2.0.0"])])
+        try await Installer(context: try context(specs: [fixture.libSpec("1.0.0"), fixture.libSpec("2.0.0")]), options: InstallOptions()).install()
+        try await fixture.addLibPatchRelease()
+        try await fixture.addWrapperPatchRelease()
+        let specs = [fixture.libSpec("1.0.0"), fixture.libSpec("1.0.1"), fixture.libSpec("2.0.0")]
+        func versions(_ names: Set<String>) async throws -> [String: Version] {
+            let analysis = try await analyze(specs: specs, update: .pods(names))
+            return Dictionary(uniqueKeysWithValues: (analysis.swiftPackages?.pins ?? []).map { ($0.identity, $0.version) })
+        }
+
+        // `Binary` is not unified: no package moves.
+        #expect(try await versions(["Binary"]) == ["lib": Version(1, 0, 0), "wrapper": Version(1, 0, 0)])
+        // `Lib` is unified with `lib`: only that package moves.
+        #expect(try await versions(["Lib"]) == ["lib": Version(1, 0, 1), "wrapper": Version(1, 0, 0)])
+        // A package named by its identity moves.
+        #expect(try await versions(["wrapper"]) == ["lib": Version(1, 0, 0), "wrapper": Version(1, 0, 1)])
     }
 
     @Test func deintegrateRemovesPackageReferences() async throws {
