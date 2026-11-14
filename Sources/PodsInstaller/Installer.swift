@@ -39,13 +39,14 @@ public struct Installer: Sendable {
                                          swiftPackages: analysis.swiftPackages)
 
         let plan = try TargetBuilder(analysis: installedAnalysis, podfileURL: context.podfileURL, projectDirectory: context.projectDirectory).build()
-        let lockfile = makeLockfile(plan: plan, previous: analysis.lockfile)
+        let lockfile = makeLockfile(plan: plan, previous: analysis.lockfile, swiftPackages: analysis.swiftPackages, unifications: analysis.unifications)
         if options.deployment, let previous = analysis.lockfile, previous != lockfile {
             throw PodsError("There were changes to the lockfile in deployment mode. Run `swiftpods install` and commit Podfile.lock.")
         }
 
         try await ui.section("Generating Pods project") {
             try PodsProjectGenerator(plan: plan, sandbox: sandbox).generate()
+            try writePackageResolved(analysis.swiftPackages?.resolvedFile)
         }
         if options.integrate, plan.podfile.installationOption("integrate_targets") != false {
             try await ui.section("Integrating client project") {
@@ -60,11 +61,24 @@ public struct Installer: Sendable {
         return plan
     }
 
+    /// Pins the package references of `Pods.xcodeproj` to the versions of the final resolution, where Xcode looks for them.
+    /// Never written to the user's workspace.
+    private func writePackageResolved(_ contents: Data?) throws {
+        let url = context.sandbox.projectURL.appendingPathComponent("project.xcworkspace/xcshareddata/swiftpm/Package.resolved")
+        guard let contents, !contents.isEmpty else {
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try contents.write(to: url)
+    }
+
     // MARK: - Lockfile
 
     /// `previous` is the lockfile being replaced; its `COCOAPODS:` version is kept so that teams
     /// mixing CocoaPods and swiftpods don't see that line change on every install.
-    func makeLockfile(plan: InstallationPlan, previous: Lockfile?) -> Lockfile {
+    func makeLockfile(plan: InstallationPlan, previous: Lockfile?, swiftPackages: SwiftPackageResolver.Result?,
+                      unifications: [PackageUnifier.Unification]) -> Lockfile {
         var lockPods: [Lockfile.Pod] = []
         var specRepos: [String: [String]] = [:]
         var externalSources: [String: [String: String]] = [:]
@@ -93,6 +107,16 @@ public struct Installer: Sendable {
             }
             if let checksum = pod.spec.checksum { checksums[pod.name] = checksum }
         }
+        // Every pin of the final resolution, with the range of its package reference (none for indirect packages).
+        let lockPackages = (swiftPackages?.pins ?? []).map { pin -> Lockfile.SwiftPackage in
+            let url = plan.podfile.swiftPackages.first { $0.identity == pin.identity }?.url ?? pin.url
+            let requirement = plan.swiftPackages.first { $0.url == url }.map { reference in
+                Requirement(constraints: [.init(.greaterThanOrEqual, reference.lowerBound), .init(.lessThan, reference.upperBound)]).lockfileDescription
+            }
+            return Lockfile.SwiftPackage(url: url, requirement: requirement ?? "", version: pin.version, revision: pin.revision,
+                                         pods: unifications.filter { $0.packageURL == url }.map(\.podRoot).sorted())
+        }
+        .sorted { $0.url < $1.url }
         let podfileData = (try? Data(contentsOf: plan.podfileURL)) ?? Data()
         return Lockfile(
             pods: lockPods,
@@ -101,6 +125,7 @@ public struct Installer: Sendable {
             externalSources: externalSources,
             checkoutOptions: checkoutOptions,
             specChecksums: checksums,
+            swiftPackages: lockPackages,
             podfileChecksum: Insecure.SHA1.hash(data: podfileData).map { String(format: "%02x", $0) }.joined(),
             cocoapodsVersion: previous?.cocoapodsVersion ?? Lockfile.compatibleCocoaPodsVersion
         )

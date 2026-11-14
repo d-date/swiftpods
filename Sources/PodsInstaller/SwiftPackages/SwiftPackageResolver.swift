@@ -160,7 +160,7 @@ struct SwiftPackageResolver {
     }
 
     /// `major.minor.patch[-prerelease]`, as SwiftPM requires.
-    private static func semanticVersion(_ version: Version, url: String) throws -> String {
+    static func semanticVersion(_ version: Version, url: String) throws -> String {
         guard version.release.count <= 3 else {
             throw PodsError("Version \(version) of Swift package \(url) is not a semantic version.")
         }

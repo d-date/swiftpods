@@ -1,8 +1,11 @@
 import Foundation
+import PathKit
 import PodsCore
 @testable import PodsInstaller
+import PodsLockfile
 import PodsSources
 import Testing
+import XcodeProj
 
 /// Local git repositories standing in for a library published both as a pod and as a SwiftPM package.
 struct SwiftPackageFixture {
@@ -180,12 +183,10 @@ struct SwiftPackageTests {
     @Test func reinstallKeepsSwiftPackagePins() async throws {
         let fixture = try await SwiftPackageFixture.create(in: root)
         try writePodfile(packages: [(fixture.libURL, [">= 1.0.0", "< 2.0.0"])])
-        let first = try await analyze(specs: [fixture.libSpec("1.0.0"), fixture.libSpec("2.0.0")])
-        #expect(first.swiftPackages?.pins.first { $0.identity == "lib" }?.version == Version(1, 0, 0))
-        // What `install` records under Pods/ (written by the project generator).
-        let resolved = root.appendingPathComponent("Pods/Pods.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved")
-        try FileManager.default.createDirectory(at: resolved.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try #require(first.swiftPackages).resolvedFile.write(to: resolved)
+        // `install` records the pins under Pods/.
+        try await Installer(context: try context(specs: [fixture.libSpec("1.0.0"), fixture.libSpec("2.0.0")]), options: InstallOptions()).install()
+        let lockfile = try Lockfile(contentsOf: root.appendingPathComponent("Podfile.lock"))
+        #expect(lockfile.swiftPackages.first?.version == Version(1, 0, 0))
 
         try await fixture.addLibPatchRelease()
         let specs = [fixture.libSpec("1.0.0"), fixture.libSpec("1.0.1"), fixture.libSpec("2.0.0")]
@@ -195,6 +196,108 @@ struct SwiftPackageTests {
 
         let updated = try await analyze(specs: specs, update: .all)
         #expect(updated.swiftPackages?.pins.first { $0.identity == "lib" }?.version == Version(1, 0, 1))
+    }
+
+    /// Installs the `unifiesDeclaredPackage` setup: `Binary` requires `Lib ~> 1.0` and the Podfile declares `lib` `>= 1.0.0, < 2.0.0`.
+    private func installUnifiedLib() async throws -> SwiftPackageFixture {
+        let fixture = try await SwiftPackageFixture.create(in: root)
+        try writePodfile(packages: [(fixture.libURL, [">= 1.0.0", "< 2.0.0"])])
+        try await Installer(context: try context(specs: [fixture.libSpec("1.0.0"), fixture.libSpec("2.0.0")]), options: InstallOptions()).install()
+        return fixture
+    }
+
+    @Test func writesPackageReferencesIntoPodsProject() async throws {
+        let fixture = try await installUnifiedLib()
+        let project = try XcodeProj(path: Path(root.appendingPathComponent("Pods/Pods.xcodeproj").path))
+        let rootObject = try #require(project.pbxproj.rootObject)
+        #expect(rootObject.remotePackages.count == 1)
+        let reference = try #require(rootObject.remotePackages.first)
+        #expect(reference.repositoryURL == fixture.libURL)
+        #expect(reference.versionRequirement == .range(from: "1.0.0", to: "1.0.1"))
+
+        let binary = try #require(project.pbxproj.nativeTargets.first { $0.name == "Binary" })
+        #expect(binary.packageProductDependencies?.map(\.productName) == ["LibCore"])
+        #expect(binary.packageProductDependencies?.first?.package === reference)
+        let aggregate = try #require(project.pbxproj.nativeTargets.first { $0.name == "Pods-App" })
+        let linked = try aggregate.frameworksBuildPhase()?.files?.compactMap { $0.product?.productName } ?? []
+        #expect(linked == ["LibCore"])
+        #expect(aggregate.packageProductDependencies?.map(\.productName) == ["LibCore"])
+        // The pod target only depends on the product; linking happens once, in the aggregate.
+        #expect(try binary.frameworksBuildPhase()?.files?.contains { $0.product != nil } != true)
+        #expect(!project.pbxproj.nativeTargets.contains { $0.name == "Lib" })
+    }
+
+    @Test func writesPackageResolvedUnderPods() async throws {
+        _ = try await installUnifiedLib()
+        let resolved = root.appendingPathComponent("Pods/Pods.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved")
+        #expect(FileManager.default.fileExists(atPath: resolved.path))
+        #expect(try SwiftPackageResolver.pins(fromResolved: Data(contentsOf: resolved)).map(\.identity) == ["lib"])
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("App.xcworkspace/xcshareddata/swiftpm/Package.resolved").path))
+    }
+
+    @Test func recordsSwiftPackagesInLockfile() async throws {
+        let fixture = try await installUnifiedLib()
+        let lockfile = try Lockfile(contentsOf: root.appendingPathComponent("Podfile.lock"))
+        #expect(lockfile.swiftPackages.count == 1)
+        let package = try #require(lockfile.swiftPackages.first)
+        #expect(package.pods == ["Lib"])
+        #expect(package.version == Version(1, 0, 0))
+        #expect(package.requirement == "(< 1.0.1, >= 1.0.0)")
+        #expect(!package.revision.isEmpty)
+        #expect(!lockfile.podNames.contains("Lib"))
+        #expect(lockfile.specRepos.values.allSatisfy { !$0.contains("Lib") })
+        #expect(lockfile.specChecksums["Lib"] == nil)
+        // The lockfile read back equals the one a reinstall computes.
+        try await Installer(context: try context(specs: [fixture.libSpec("1.0.0"), fixture.libSpec("2.0.0")]),
+                            options: InstallOptions(deployment: true)).install()
+    }
+
+    @Test func deintegrateRemovesPackageReferences() async throws {
+        _ = try await installUnifiedLib()
+        try Deintegrator(projectDirectory: root, ui: .capturing()).deintegrate()
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("Pods").path))
+    }
+
+    /// Builds the app with xcodebuild: `Binary` calls into `Lib`, which comes from SwiftPM and must be linked exactly once.
+    /// With `indirect`, `Lib` is only a dependency of the declared `Wrapper` package.
+    /// Slow, so opt-in: `SWIFTPODS_XCODEBUILD=1 swift test`.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["SWIFTPODS_XCODEBUILD"] == "1"), arguments: [false, true])
+    func linksUnifiedPackageOnce(indirect: Bool) async throws {
+        let fixture = try await SwiftPackageFixture.create(in: root)
+        let binary = root.appendingPathComponent("LocalPods/Binary")
+        try """
+        {"name":"Binary","version":"1.0.0","platforms":{"ios":"12.0"},"source":{"git":"https://example.com/Binary.git","tag":"1.0.0"},
+         "source_files":"*.{h,m}","public_header_files":"Binary.h","dependencies":{"Lib":["~> 1.0"]}}
+        """.write(to: binary.appendingPathComponent("Binary.podspec.json"), atomically: true, encoding: .utf8)
+        try "int BinaryValue(void);\n".write(to: binary.appendingPathComponent("Binary.h"), atomically: true, encoding: .utf8)
+        try """
+        #import "Binary.h"
+        @import LibCore;
+
+        int BinaryValue(void) { return LibValue() + 1; }
+
+        """.write(to: binary.appendingPathComponent("Binary.m"), atomically: true, encoding: .utf8)
+        try writePodfile(packages: [(indirect ? fixture.wrapperURL : fixture.libURL, [">= 1.0.0", "< 2.0.0"])])
+        try await Installer(context: try context(specs: [fixture.libSpec("1.0.0"), fixture.libSpec("2.0.0")]), options: InstallOptions()).install()
+        try """
+        import SwiftUI
+        import Binary
+
+        @main
+        struct FixtureApp: App {
+            var body: some Scene { WindowGroup { Text("\\(BinaryValue())") } }
+        }
+        """.write(to: root.appendingPathComponent("App/App.swift"), atomically: true, encoding: .utf8)
+
+        let output = try await Shell().execute([
+            "xcodebuild", "-workspace", "App.xcworkspace", "-scheme", "App", "-configuration", "Debug",
+            "-sdk", "iphonesimulator", "-derivedDataPath", root.appendingPathComponent("DerivedData").path,
+            "CODE_SIGNING_ALLOWED=NO", "build",
+        ], in: root)
+        let log = output.stdout + output.stderr
+        #expect(output.status == 0, "\(output.stdout.suffix(4000))\n\(output.stderr.suffix(2000))")
+        #expect(!log.contains("duplicate symbol"))
+        #expect(!log.contains("Undefined symbols"))
     }
 
     @Test func secondResolutionNarrowsDeclaredRange() async throws {

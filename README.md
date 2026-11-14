@@ -107,6 +107,37 @@ let podfile = Podfile(
 When both exist, `Podfile.swift` takes precedence over `Podfile`. Like `Package.swift`, the
 manifest is compiled and run, so you can use any Swift code to build it.
 
+#### SwiftPM packages
+
+`Podfile.swift` can also declare SwiftPM packages, resolved together with the pods:
+
+```swift
+let podfile = Podfile(
+    platform: .iOS(.v16),
+    packages: [
+        .package(url: "https://github.com/google/GoogleUtilities.git", "8.0.0"..<"9.0.0"),
+    ],
+    targets: [
+        .target(
+            name: "App",
+            dependencies: [
+                .pod(name: "GoogleMLKit/BarcodeScanning", from: "7.0.0"),
+                .product(name: "GULLogger", package: "GoogleUtilities"),
+            ]
+        ),
+    ]
+)
+```
+
+When a pod is the same library as a resolved package (its version tags point at the same git
+commits), SwiftPods uses the package instead of building the pod, so the library is linked only
+once. The package is restricted to the versions tagged at the same commit as a version the pods
+accept, and SwiftPM picks the version. The packages are added to `Pods/Pods.xcodeproj` as package
+references, their products are linked through the `Pods-<Target>` targets, the pins are written to
+`Pods/Pods.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`, and
+`Podfile.lock` records them under `SWIFT PACKAGES:`. Your own `.xcodeproj`, `Package.swift` and
+workspace `Package.resolved` are not written to.
+
 ### Podspecs in Swift
 
 ```swift

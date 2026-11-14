@@ -37,6 +37,12 @@ public struct InstalledPod: Sendable {
     public var name: String { spec.name }
 }
 
+/// A library product of a SwiftPM package referenced by `Pods.xcodeproj`.
+public struct PackageProductRef: Sendable, Hashable {
+    public let packageURL: String
+    public let product: String
+}
+
 /// A target in `Pods.xcodeproj` that builds one pod for one platform.
 public struct PodTarget: Sendable {
     /// Xcode target name, e.g. `Alamofire` or `Alamofire-iOS` when the pod is used on several platforms.
@@ -50,6 +56,8 @@ public struct PodTarget: Sendable {
     public var dependencyNames: [String]
     public let inhibitWarnings: Bool
     public let swiftVersion: String?
+    /// Products of the SwiftPM packages that replace pods this target depends on (not linked here).
+    public let packageProducts: [PackageProductRef]
     let files: FileAccessor
 
     public var rootSpec: Specification { pod.spec }
@@ -80,6 +88,8 @@ public struct AggregateTarget: Sendable {
     public let clientRoot: URL
     public let buildConfigurations: [String]
     public let buildType: BuildType
+    /// SwiftPM products linked into the user target: those of the linked pod targets and those the Podfile names.
+    public let packageProducts: [PackageProductRef]
 
     public var label: String { definition.label }
     public var productName: String { buildType.isFramework ? Specification.c99Identifier(label) : label }
@@ -95,6 +105,8 @@ public struct InstallationPlan: Sendable {
     public let pods: [InstalledPod]
     public let podTargets: [PodTarget]
     public let aggregateTargets: [AggregateTarget]
+    /// Package references of `Pods.xcodeproj`: the declared and the unified packages, with the ranges of the final resolution.
+    public let swiftPackages: [(url: String, lowerBound: Version, upperBound: Version)]
 
     public func podTarget(named name: String) -> PodTarget? { podTargets.first { $0.name == name } }
 }

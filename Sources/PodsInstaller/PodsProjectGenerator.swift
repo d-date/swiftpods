@@ -36,6 +36,10 @@ struct PodsProjectGenerator {
         let builder = ProjectBuilder(configurations: configurations, sandbox: sandbox)
         let xcconfigs = XCConfigBuilder(plan: plan, sandbox: sandbox)
         builder.addPodfileReference(plan.podfileURL)
+        for package in plan.swiftPackages {
+            try builder.addPackageReference(url: package.url, from: SwiftPackageResolver.semanticVersion(package.lowerBound, url: package.url),
+                                            to: SwiftPackageResolver.semanticVersion(package.upperBound, url: package.url))
+        }
 
         var nativeTargets: [String: PBXTarget] = [:]
         var bundleTargets: [String: [PBXNativeTarget]] = [:]
@@ -233,6 +237,10 @@ struct PodsProjectGenerator {
         }
         builder.addPhase(PBXSourcesBuildPhase(files: sourceFiles), to: native)
         builder.addPhase(PBXFrameworksBuildPhase(), to: native)
+        // For headers and modules only: the aggregate target links the products.
+        if !target.packageProducts.isEmpty {
+            native.packageProductDependencies = try target.packageProducts.map(builder.productDependency)
+        }
 
         // Swift static libraries expose a module map (with `-Swift.h`) so Objective-C dependents can `@import` them.
         if !target.buildType.isFramework, target.usesSwift, !files.isModuleMapDisabled {
@@ -396,7 +404,9 @@ struct PodsProjectGenerator {
         if let dummyReference = builder.supportFileReferences[dummy.path] {
             builder.addPhase(PBXSourcesBuildPhase(files: [builder.buildFile(dummyReference)]), to: native)
         }
-        builder.addPhase(PBXFrameworksBuildPhase(), to: native)
+        let products = try aggregate.packageProducts.map(builder.productDependency)
+        if !products.isEmpty { native.packageProductDependencies = products }
+        builder.addPhase(PBXFrameworksBuildPhase(files: products.map { builder.buildFile($0) }), to: native)
         if aggregate.buildType.isFramework {
             builder.addPhase(PBXHeadersBuildPhase(), to: native)
         }
@@ -599,6 +609,23 @@ final class ProjectBuilder {
         group.children.append(reference)
         supportFileReferences[url.path] = reference
         return reference
+    }
+
+    func addPackageReference(url: String, from lower: String, to upper: String) {
+        let reference = add(XCRemoteSwiftPackageReference(repositoryURL: url, versionRequirement: .range(from: lower, to: upper)))
+        project.remotePackages.append(reference)
+    }
+
+    /// A new dependency on a product of a package added with `addPackageReference`.
+    func productDependency(_ product: PackageProductRef) throws -> XCSwiftPackageProductDependency {
+        guard let package = project.remotePackages.first(where: { $0.repositoryURL == product.packageURL }) else {
+            throw PodsError("Swift package \(product.packageURL) has no package reference.")
+        }
+        return add(XCSwiftPackageProductDependency(productName: product.product, package: package))
+    }
+
+    func buildFile(_ product: XCSwiftPackageProductDependency) -> PBXBuildFile {
+        add(PBXBuildFile(product: product))
     }
 
     func buildFile(_ file: PBXFileElement, attributes: [String]? = nil, compilerFlags: String? = nil) -> PBXBuildFile {

@@ -59,10 +59,15 @@ struct TargetBuilder {
             let minimum = variant.deploymentTargets.min() ?? Platform(key.platform).effectiveDeploymentTarget
             let platform = Platform(key.platform, max(minimum, pod.spec.deploymentTarget(for: key.platform) ?? minimum))
             let files = FileAccessor(root: pod.location, specs: specs, platform: key.platform)
+            var dependencyRoots = Set<String>()
+            for spec in specs {
+                for dependency in spec.dependencies(for: key.platform) { dependencyRoots.insert(dependency.rootName) }
+            }
             podTargets[key] = PodTarget(
                 name: names[key]!, pod: pod, specs: specs, platform: platform, buildType: key.buildType,
                 dependencyNames: [], inhibitWarnings: variant.inhibitWarnings,
                 swiftVersion: files.usesSwift ? (pod.spec.swiftVersions.max()?.rawValue ?? "5.0") : nil,
+                packageProducts: try packageProducts(replacing: dependencyRoots),
                 files: files
             )
         }
@@ -90,6 +95,15 @@ struct TargetBuilder {
             }
             let projectURL = analysis.targetProjects[target.name]
             let info = projectURL.flatMap { analysis.userProjects[$0] }
+            // Pod targets only depend on package products; the aggregate links them, once.
+            var products = names.flatMap { byName[$0]!.packageProducts }
+            products += try packageProducts(replacing: Set(target.dependencies.map(\.dependency.rootName)))
+            for product in target.packageProducts {
+                guard let package = analysis.podfile.swiftPackages.first(where: { $0.identity == product.package.lowercased() }) else {
+                    throw PodsError("Target `\(target.name)` uses product `\(product.name)` of undeclared Swift package `\(product.package)`.")
+                }
+                products.append(PackageProductRef(packageURL: package.url, product: product.name))
+            }
             aggregates.append(AggregateTarget(
                 definition: target,
                 platform: analysis.targetPlatforms[target.name]!,
@@ -98,15 +112,58 @@ struct TargetBuilder {
                 userProject: projectURL,
                 clientRoot: projectURL?.deletingLastPathComponent() ?? projectDirectory,
                 buildConfigurations: info?.configurations ?? ["Debug", "Release"],
-                buildType: BuildType(target.usesFrameworks)
+                buildType: BuildType(target.usesFrameworks),
+                packageProducts: products.reduce(into: []) { if !$0.contains($1) { $0.append($1) } }
             ))
         }
 
         return InstallationPlan(
             podfile: analysis.podfile, podfileURL: podfileURL, pods: analysis.pods,
             podTargets: topologicalOrder(byName.keys.sorted(), targets: byName).map { byName[$0]! },
-            aggregateTargets: aggregates
+            aggregateTargets: aggregates,
+            swiftPackages: try packageReferences()
         )
+    }
+
+    // MARK: - Swift packages
+
+    /// The roots of the final SwiftPM resolution: declared packages with their Podfile range, narrowed for unified ones.
+    private func packageReferences() throws -> [(url: String, lowerBound: Version, upperBound: Version)] {
+        guard analysis.swiftPackages != nil else { return [] }
+        var references: [String: (url: String, lowerBound: Version, upperBound: Version)] = [:]
+        for package in analysis.podfile.swiftPackages {
+            let range = try SwiftPackageResolver.range(of: package.requirement, url: package.url)
+            references[package.identity] = (package.url, range.lower, range.upper)
+        }
+        for unification in analysis.unifications {
+            references[try packageIdentity(of: unification.packageURL)] = (unification.packageURL, unification.lowerBound, unification.upperBound)
+        }
+        return references.sorted { $0.key < $1.key }.map(\.value)
+    }
+
+    /// Library products of the packages that replace the pods among `roots`, ordered by pod.
+    private func packageProducts(replacing roots: Set<String>) throws -> [PackageProductRef] {
+        var result: [PackageProductRef] = []
+        for unification in analysis.unifications where roots.contains(unification.podRoot) {
+            let products = analysis.swiftPackages?.libraryProducts[try packageIdentity(of: unification.packageURL)] ?? []
+            guard !products.isEmpty else {
+                throw PodsError("Swift package \(unification.packageURL), which replaces pod `\(unification.podRoot)`, has no library products.")
+            }
+            for product in products {
+                let reference = PackageProductRef(packageURL: unification.packageURL, product: product)
+                if !result.contains(reference) { result.append(reference) }
+            }
+        }
+        return result
+    }
+
+    /// SwiftPM identity of a package: declared packages keep the Podfile URL, indirect ones the pin's location.
+    private func packageIdentity(of url: String) throws -> String {
+        if let declared = analysis.podfile.swiftPackages.first(where: { $0.url == url }) { return declared.identity }
+        guard let pin = analysis.swiftPackages?.pins.first(where: { $0.url == url }) else {
+            throw PodsError("Swift package \(url) is missing from the resolved packages.")
+        }
+        return pin.identity
     }
 
     /// Spec names needed for `dependencies` on `platform`, grouped by root pod.

@@ -39,6 +39,7 @@ Legend: ✅ supported · ⚠️ partial · ❌ not supported
 | `plugin` | ❌ | Reported as warnings |
 | `podspec` directive | ⚠️ | Recorded as a `:path` dependency |
 | `generate_multiple_pod_projects` | ❌ | One `Pods.xcodeproj` is generated |
+| SwiftPM packages (`Podfile.swift` `packages:`, `.product(name:package:)`) | ✅ | SwiftPods extension; see [SwiftPM packages](#swiftpm-packages) |
 
 ## Podspec attributes
 
@@ -72,7 +73,34 @@ Legend: ✅ supported · ⚠️ partial · ❌ not supported
 | Different subspec sets per target | ⚠️ The union of subspecs is built once per platform |
 | Acknowledgements (`Pods-App-acknowledgements.markdown/.plist`) | ✅ |
 | Deterministic object identifiers | ⚠️ Stable across re-installs of the same inputs, but not CocoaPods' UUIDs |
-| `deintegrate` | ✅ Removes phases, base configurations, products and `Pods/` |
+| `deintegrate` | ✅ Removes phases, base configurations, products and `Pods/` (including package references) |
+| SwiftPM package references and products | ✅ See [SwiftPM packages](#swiftpm-packages) |
+
+## SwiftPM packages
+
+SwiftPods extension, only in `Podfile.swift` (and `Podfile.json` with `swift_packages` /
+`swift_package_products`). Podfiles that declare no package behave exactly as before.
+
+* Declared packages are resolved with `swift package resolve` in a scratch package.
+* A pod is unified with a resolved package (declared or indirect) when one of its version tags
+  points at the same git commit as one of the package's tags, or when both use the same repository.
+  The pod is then not built: the package's library products replace it.
+* The package is restricted to the versions whose tag points at the same commit as a pod version
+  that satisfies every requirement on the pod; SwiftPM resolves again within that range and the
+  chosen version and revision are checked. No such version is an error that lists the requirements.
+* `Pods.xcodeproj` gets an `XCRemoteSwiftPackageReference` for every declared or unified package,
+  with the range of that final resolution. Pod targets that depend on a unified pod get the package's
+  products as dependencies (headers and modules only); the `Pods-<Target>` target links them, so
+  each library is linked exactly once. Products named with `.product(name:package:)` are linked
+  through `Pods-<Target>` too.
+* The pins are written to `Pods/Pods.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`
+  and kept by `install` (only `update` moves them). The user project, the user's `Package.swift`
+  and `App.xcworkspace/xcshareddata/swiftpm/Package.resolved` are never written to. Xcode,
+  however, resolves packages again for the workspace and keeps its own `Package.resolved` there;
+  it picks within the same range, but may pick a newer allowed version than the one in `Podfile.lock`.
+* `Podfile.lock` gets a `SWIFT PACKAGES:` section with every pin: URL, requirement (the package
+  reference's range), version, revision and the unified pods. Unified pods are not listed under
+  `PODS`, `SPEC REPOS` or `SPEC CHECKSUMS`; `DEPENDENCIES` keeps the Podfile's dependencies.
 
 ## Behavioural differences
 
