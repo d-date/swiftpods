@@ -136,8 +136,8 @@ accept, and SwiftPM picks the version. The packages are added to `Pods/Pods.xcod
 references pinned to the exact resolved versions, their products are linked through the
 `Pods-<Target>` targets, the pins are written to
 `Pods/Pods.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`, and
-`Podfile.lock` records them under `SWIFT PACKAGES:`. `swiftpods install` keeps the pinned versions
-(from `Podfile.lock` too, when `Pods/` is missing); `swiftpods update` moves them, and
+`Podfile.lock` records them under `SWIFT PACKAGES:`. `swiftpods install` keeps the pinned versions of
+`Podfile.lock` (those under `Pods/` only when there is no `Podfile.lock`); `swiftpods update` moves them, and
 `swiftpods update <names>` only moves the packages the named pods are unified with or that are
 named by identity. Every library product of a unified package is linked. Your own `.xcodeproj`,
 `Package.swift` and workspace `Package.resolved` are not written to. Not supported yet: package

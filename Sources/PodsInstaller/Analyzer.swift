@@ -318,8 +318,8 @@ struct Analyzer {
         return (unifications, second)
     }
 
-    /// The pins the resolutions start from: those under `Pods/` or, when they are missing, the `SWIFT PACKAGES` of Podfile.lock,
-    /// so that the lockfile alone keeps the versions. `update` keeps none (`nil`); `update <names>` moves (`updating`) the pinned
+    /// The pins the resolutions start from: the `SWIFT PACKAGES` of Podfile.lock, which is shared, or, without a lockfile, those
+    /// under `Pods/`. A stale `Pods/` (after pulling a Podfile.lock that moved a package) must not move the pins back. `update` keeps none (`nil`); `update <names>` moves (`updating`) the pinned
     /// packages the named pods were unified with and those whose identity is named.
     private func previousPins(lockfile: Lockfile?) -> (pins: [SwiftPackageResolver.Pin], updating: Set<String>)? {
         let names: Set<String>
@@ -330,13 +330,13 @@ struct Analyzer {
         }
         let resolvedFileURL = context.sandbox.projectURL.appendingPathComponent("project.xcworkspace/xcshareddata/swiftpm/Package.resolved")
         let pins: [SwiftPackageResolver.Pin]
-        if let data = try? Data(contentsOf: resolvedFileURL), let resolved = try? SwiftPackageResolver.pins(fromResolved: data) {
-            pins = resolved
-        } else if let lockfile {
+        if let lockfile {
             pins = lockfile.swiftPackages.map { package in
                 SwiftPackageResolver.Pin(identity: SwiftPackageDependency(url: package.url, requirement: .any).identity, url: package.url,
                                          version: package.version, revision: package.revision)
             }
+        } else if let data = try? Data(contentsOf: resolvedFileURL), let resolved = try? SwiftPackageResolver.pins(fromResolved: data) {
+            pins = resolved
         } else {
             return nil
         }

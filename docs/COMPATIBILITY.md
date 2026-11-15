@@ -107,9 +107,10 @@ SwiftPods extension, only in `Podfile.swift` (and `Podfile.json` with `swift_pac
   `:linkage => :static`): a pod built as a dynamic framework that depends on a unified pod, or a
   `Pods-<Target>` built as a dynamic framework that links package products (a unified pod or a
   `.product(name:package:)`), is an error. Static frameworks and static libraries work.
-* The pins are written to `Pods/Pods.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`
-  and kept by `install`; when `Pods/` is missing, the pins of `SWIFT PACKAGES:` in `Podfile.lock`
-  are kept instead. `swiftpods update` resolves again and moves them (and the exact versions of
+* The pins are written to `SWIFT PACKAGES:` in `Podfile.lock` and to
+  `Pods/Pods.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`. `install` keeps
+  the pins of `Podfile.lock` (a stale `Pods/` does not move them back); the `Package.resolved` under
+  `Pods/` is only used when there is no `Podfile.lock`. `swiftpods update` resolves again and moves them (and the exact versions of
   the package references); `swiftpods update <names>` only moves the packages the named pods are
   unified with and the packages named by their identity. The user project, the user's `Package.swift` and
   `App.xcworkspace/xcshareddata/swiftpm/Package.resolved` are never written to. Xcode resolves

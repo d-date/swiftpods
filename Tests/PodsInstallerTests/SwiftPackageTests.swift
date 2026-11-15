@@ -366,6 +366,22 @@ struct SwiftPackageTests {
         try await Installer(context: try context(specs: specs), options: InstallOptions(deployment: true)).install()
     }
 
+    /// A stale `Pods/` (a teammate bumped Podfile.lock) must not move the pins back.
+    @Test func lockfilePinsWinOverStalePodsDirectory() async throws {
+        let fixture = try await installUnifiedLib()
+        let resolved = root.appendingPathComponent("Pods/Pods.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved")
+        let stale = try Data(contentsOf: resolved)
+        try await fixture.addLibPatchRelease()
+        let specs = [fixture.libSpec("1.0.0"), fixture.libSpec("1.0.1"), fixture.libSpec("2.0.0")]
+        try await Installer(context: try context(specs: specs), options: InstallOptions(update: .all)).install()
+        #expect(try Lockfile(contentsOf: root.appendingPathComponent("Podfile.lock")).swiftPackages.map(\.version) == [Version(1, 0, 1)])
+
+        try stale.write(to: resolved)
+        try await Installer(context: try context(specs: specs), options: InstallOptions()).install()
+        #expect(try Lockfile(contentsOf: root.appendingPathComponent("Podfile.lock")).swiftPackages.map(\.version) == [Version(1, 0, 1)])
+        #expect(try SwiftPackageResolver.pins(fromResolved: Data(contentsOf: resolved)).map(\.version) == [Version(1, 0, 1)])
+    }
+
     @Test func updateOfNamedPodsKeepsOtherPins() async throws {
         let fixture = try await SwiftPackageFixture.create(in: root)
         try writePodfile(packages: [(fixture.wrapperURL, [">= 1.0.0", "< 2.0.0"])])
