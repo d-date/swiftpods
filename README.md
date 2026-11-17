@@ -47,6 +47,7 @@ $ cp .build/release/swiftpods /usr/local/bin/
 | `swiftpods update [POD...]` | Update all pods, or only the given ones |
 | `swiftpods outdated` | List pods with newer versions |
 | `swiftpods deintegrate` | Remove the integration from your Xcode project(s) |
+| `swiftpods package --version <v> [--output <dir>] [--skip-verification]` | Build the pods into xcframeworks and generate a distribution `Package.swift` (see [Distributing pods as a Swift package](#distributing-pods-as-a-swift-package)) |
 | `swiftpods spec json <file>` | Convert a Ruby or Swift podspec to podspec JSON (the format trunk accepts) |
 | `swiftpods spec lint <file>` | Validate a podspec's attributes |
 | `swiftpods spec cat <pod>` | Print a published podspec |
@@ -170,6 +171,68 @@ let podspec = PodSpec(
 ```
 
 `swiftpods spec json MyKit.podspec.swift > MyKit.podspec.json` produces a spec you can publish to trunk.
+
+### Distributing pods as a Swift package
+
+`swiftpods package` turns CocoaPods-only pods (prebuilt ones included) into a SwiftPM package of binary
+targets, as [google-mlkit-swiftpm](https://github.com/d-date/google-mlkit-swiftpm) does for Google ML Kit.
+The Podfile.swift needs `distribution:`, one target, `integrateTargets: false` and static frameworks:
+
+```swift
+let podfile = Podfile(
+    platform: .iOS("15.5"),
+    useFrameworks: .static,
+    installationOptions: .init(integrateTargets: false),
+    packages: [
+        .package(url: "https://github.com/google/GoogleUtilities.git", from: "8.1.0"),
+        .package(url: "https://github.com/google/gtm-session-fetcher.git", "3.5.0"..<"6.0.0",
+                 overridingPodRequirements: .unsafe(reason: "ABI checked by hand for Firebase 13")),
+    ],
+    distribution: .init(name: "GoogleMLKitSwiftPM", url: "https://github.com/d-date/google-mlkit-swiftpm"),
+    targets: [
+        .target(name: "MLKit", dependencies: [
+            .pod(name: "GoogleMLKit/BarcodeScanning", "~> 9.0.0"),
+            .pod(name: "GoogleMLKit/FaceDetection", "~> 9.0.0"),
+        ]),
+    ]
+)
+```
+
+```sh
+swiftpods package --version 9.0.3
+```
+
+* **Products and targets** are derived from the pod graph: one library product per declared pod (for a
+  subspec of an umbrella pod such as `GoogleMLKit/BarcodeScanning`, the pod it depends on:
+  `MLKitBarcodeScanning`), listing the binary targets of that pod's transitive closure. Binary targets
+  every product needs go into a `Common` source target (`@_exported import` of each prebuilt framework; source pods become
+  library xcframeworks without a module map and are only linked), together with the
+  library products of the Swift packages the pods are unified with.
+* **Dependency ranges**: a package a pod is unified with is narrowed to the versions the pods accept: the
+  longest run of consecutive tagged versions, all accepted, around the resolved one (`"lo"..."hi"`, or
+  `exact:` for a single version). New upstream releases come in with the next `swiftpods package`.
+  Other declared packages keep their declared range.
+* **Unsafe overrides**: `overridingPodRequirements: .unsafe(reason:)` replaces the pods' requirement on a
+  package with the declared range, for when you have checked by hand that a wider range works.
+  `install` and `package` print a warning instead of failing, and the generated `Package.swift` keeps the
+  declared range and starts with a `#warning` naming the package. `swift package resolve` prints that
+  warning to consumers when it evaluates the manifest (also for a dependency); `xcodebuild
+  -resolvePackageDependencies` does not print it (Xcode 27.2), and whether the Xcode UI shows it was not
+  checked. Do not rely on consumers seeing it.
+* **Outputs**, in `build/distribution` next to the Podfile or `--output`: `<Module>.xcframework.zip` for
+  every binary target (and the unzipped xcframework), `<Bundle>.bundle.zip` for every resource bundle,
+  `Package.swift` and `Sources/Common/export.swift`. The last two are also written next to the Podfile.
+  Binary target URLs are `<distribution url>/releases/download/<version>/<Module>.xcframework.zip`; upload
+  the zips there. Resource bundles are not part of the package: consumers add the unzipped bundles to
+  their app.
+* **Binary fixes**: prebuilt frameworks get an `Info.plist` when they lack one, an arm64 simulator slice
+  is made from the device slice when missing, objects without a platform are given one, object-file
+  binaries become `ar` archives, and source pods become library xcframeworks (`lib<Module>.a`).
+* **Verification**: every product is linked on its own into an iOS executable for the simulator and
+  the device, importing the product's module and linking with `-ObjC -all_load` (as consumers of static
+  archives must), so a product that only links thanks to another product's targets fails the command. `--skip-verification` skips it.
+* Not supported yet: platforms other than iOS, Swift source pods, pods with both sources and vendored
+  frameworks, and dynamic prebuilt frameworks.
 
 ## Compatibility
 

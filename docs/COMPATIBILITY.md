@@ -40,6 +40,8 @@ Legend: ✅ supported · ⚠️ partial · ❌ not supported
 | `podspec` directive | ⚠️ | Recorded as a `:path` dependency |
 | `generate_multiple_pod_projects` | ❌ | One `Pods.xcodeproj` is generated |
 | SwiftPM packages (`Podfile.swift` `packages:`, `.product(name:package:)`) | ✅ | SwiftPods extension; see [SwiftPM packages](#swiftpm-packages) |
+| `.package(..., overridingPodRequirements: .unsafe(reason:))` | ✅ | SwiftPods extension: the package is resolved within its declared range instead of the range the pods accept; `install` warns instead of failing, and `swiftpods package` keeps the declared range with a manifest `#warning` (printed to consumers by `swift package resolve`; not printed by `xcodebuild -resolvePackageDependencies` in Xcode 27.2; display in the Xcode UI not checked) |
+| `distribution:` and `swiftpods package` | ✅ | SwiftPods extension: builds the pods into xcframework and resource bundle zips and generates the whole distribution `Package.swift`, then links every product on its own. iOS only; needs one target, `integrateTargets: false` and static frameworks; Swift source pods, pods with both sources and vendored frameworks, and dynamic prebuilt frameworks are not supported yet. Verified by regenerating google-mlkit-swiftpm 9.0.3 (see README) |
 
 ## Podspec attributes
 
