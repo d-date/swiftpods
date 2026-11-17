@@ -9,7 +9,8 @@ import PodsSpec
 public struct DistributionOptions: Sendable {
     /// The distribution's version, used in the binary target URLs.
     public let version: String
-    /// Where the zips and a copy of `Package.swift` go; `<Podfile directory>/build/distribution` when `nil`.
+    /// Where the zips, the unzipped xcframeworks and a copy of `Package.swift` and `Sources/Common` go;
+    /// `<Podfile directory>/build/distribution` when `nil`.
     public let outputDirectory: URL?
     /// Whether every product is checked to link on its own.
     public let verify: Bool
@@ -22,7 +23,7 @@ public struct DistributionOptions: Sendable {
 }
 
 /// `swiftpods package`: builds the pods of a Podfile with `distribution` into xcframework and resource bundle
-/// zips and writes the distribution `Package.swift`.
+/// zips, writes the distribution `Package.swift`, and checks that every product links on its own.
 public struct DistributionBuilder: Sendable {
     public let context: InstallerContext
     public let options: DistributionOptions
@@ -106,11 +107,20 @@ public struct DistributionBuilder: Sendable {
             dependencies: try Self.packageDependencies(declared: podfile.swiftPackages, unifications: analysis.unifications,
                                                        resolved: analysis.swiftPackages)
         )
-        let exports = projectDirectory.appendingPathComponent("Sources/Common/export.swift")
-        try FileManager.default.createDirectory(at: exports.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try DistributionManifest.renderCommonExports(layout: layout).write(to: exports, atomically: true, encoding: .utf8)
-        try manifest.write(to: projectDirectory.appendingPathComponent("Package.swift"), atomically: true, encoding: .utf8)
-        try manifest.write(to: output.appendingPathComponent("Package.swift"), atomically: true, encoding: .utf8)
+        let commonExports = DistributionManifest.renderCommonExports(layout: layout)
+        for directory in [projectDirectory, output] {
+            let exports = directory.appendingPathComponent("Sources/Common/export.swift")
+            try FileManager.default.createDirectory(at: exports.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try commonExports.write(to: exports, atomically: true, encoding: .utf8)
+            try manifest.write(to: directory.appendingPathComponent("Package.swift"), atomically: true, encoding: .utf8)
+        }
+        if options.verify {
+            try await ui.section("Verifying that every product links on its own") {
+                try await ProductLinkVerifier(shell: context.shell, workDirectory: work.appendingPathComponent("verification"),
+                                              deploymentTarget: platform.effectiveDeploymentTarget)
+                    .verify(products: layout.products.map(\.name), packageDirectory: output)
+            }
+        }
         ui.message("Wrote the distribution of \(settings.name) \(options.version) to \(output.path)", style: .success)
         return output
     }

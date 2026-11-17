@@ -137,6 +137,47 @@ struct DistributionBuilderTests {
         ])
     }
 
+    @Test func verificationManifestUsesLocalXCFrameworks() throws {
+        let manifest = """
+            .binaryTarget(
+              name: "Lib",
+              url: "https://example.com/fixture/releases/download/1.0.0/Lib.xcframework.zip",
+              checksum: "a783fcd83fa1d967d409187faf5d648e9aed61db7bd1376eb48674edb4e3d51b"),
+            .target(
+              name: "Common",
+        """
+
+        #expect(try ProductLinkVerifier.localManifest(manifest) == """
+            .binaryTarget(
+              name: "Lib",
+              path: "Lib.xcframework"),
+            .target(
+              name: "Common",
+        """)
+        #expect(throws: PodsError.self) { try ProductLinkVerifier.localManifest(#"url: "Lib.zip", checksum: "00")"#) }
+    }
+
+    @Test func linkFailureSummary() {
+        let log = """
+        Ld /tmp/dd/Build/Intermediates.noindex/App.build/Binary/App normal x86_64
+            /usr/bin/swiftc -emit-executable -o App
+        Undefined symbols for architecture x86_64:
+          "_SourceValue", referenced from:
+              _PrebuiltValue in Prebuilt[x86_64][2](x86_64)
+        ld: symbol(s) not found for architecture x86_64
+        Package.swift: App-product: clang: error: linker command failed with exit code 1 (use -v to see invocation)
+        Undefined symbols for architecture arm64:
+          "_SourceValue", referenced from:
+        """
+
+        #expect(ProductLinkVerifier.failureSummary(log) == """
+        Undefined symbols for architecture x86_64:
+          "_SourceValue", referenced from:
+              _PrebuiltValue in Prebuilt[x86_64][2](x86_64)
+        """)
+        #expect(ProductLinkVerifier.failureSummary("note: x\nerror: no such module") == "error: no such module")
+    }
+
     /// Runs install, xcodebuild and xcframework assembly end to end. Slow, so opt-in: `SWIFTPODS_XCODEBUILD=1 swift test`.
     @Test(.enabled(if: ProcessInfo.processInfo.environment["SWIFTPODS_XCODEBUILD"] == "1"))
     func buildsFixtureDistribution() async throws {
@@ -159,5 +200,34 @@ struct DistributionBuilderTests {
         """))
         #expect(try String(contentsOf: root.appendingPathComponent("Package.swift"), encoding: .utf8) == manifest)
         #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("Sources/Common/export.swift").path))
+        // The output directory is a complete package apart from the binary target URLs: verification builds it.
+        #expect(FileManager.default.fileExists(atPath: output.appendingPathComponent("Sources/Common/export.swift").path))
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("build/work/verification/Prebuilt").path))
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("build/work/verification/Source").path))
+    }
+
+    /// A product whose targets lack a binary target its other targets need fails verification with the linker's
+    /// undefined symbols. Slow, so opt-in like `buildsFixtureDistribution`.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["SWIFTPODS_XCODEBUILD"] == "1"))
+    func detectsProductMissingATarget() async throws {
+        try writePodfile()
+        try await writePods()
+        let output = try await DistributionBuilder(context: try context(), options: DistributionOptions(version: "1.0.0", outputDirectory: nil, verify: false)).build()
+        // `Prebuilt` calls `SourceValue`, which only the `Source` binary target defines.
+        let manifestURL = output.appendingPathComponent("Package.swift")
+        let manifest = try String(contentsOf: manifestURL, encoding: .utf8)
+        let broken = manifest.replacingOccurrences(of: #"targets: ["Prebuilt", "Source", "Common"]"#, with: #"targets: ["Prebuilt", "Common"]"#)
+        #expect(broken != manifest)
+        try broken.write(to: manifestURL, atomically: true, encoding: .utf8)
+
+        let verifier = ProductLinkVerifier(shell: shell, workDirectory: root.appendingPathComponent("verification"), deploymentTarget: Version(15, 0, 0))
+        let error = await #expect(throws: PodsError.self) {
+            try await verifier.verify(products: ["Prebuilt", "Source"], packageDirectory: output)
+        }
+
+        let message = error?.description ?? ""
+        #expect(message.contains("Prebuilt"), "\(message)")
+        #expect(message.contains("Undefined symbols"), "\(message)")
+        #expect(message.contains("_SourceValue"), "\(message)")
     }
 }
