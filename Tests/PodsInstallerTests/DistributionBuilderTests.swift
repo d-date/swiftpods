@@ -48,7 +48,9 @@ struct DistributionBuilderTests {
     }
 
     /// `Source`: an Objective-C source pod. `Prebuilt`: a vendored static framework (clang-built objects, device
-    /// arm64 + simulator x86_64, no Info.plist) calling into `Source`.
+    /// arm64 + simulator x86_64, no Info.plist, a module map) calling into `Source` and CoreMedia. Its objects are
+    /// built without modules, so like ML Kit's they carry no autolink entry: CoreMedia is linked only because
+    /// the module's header imports it.
     private func writePods() async throws {
         try write("""
         {"name":"Source","version":"1.0.0","platforms":{"ios":"15.0"},"source":{"git":"https://example.com/Source.git","tag":"1.0.0"},
@@ -59,18 +61,28 @@ struct DistributionBuilderTests {
 
         try write("""
         {"name":"Prebuilt","version":"2.0.0","platforms":{"ios":"15.0"},"source":{"http":"https://example.com/Prebuilt.zip"},
-         "vendored_frameworks":"Prebuilt.framework","dependencies":{"Source":[]}}
+         "vendored_frameworks":"Prebuilt.framework","frameworks":"CoreMedia","dependencies":{"Source":[]}}
         """, "LocalPods/Prebuilt/Prebuilt.podspec.json")
         let framework = root.appendingPathComponent("LocalPods/Prebuilt/Prebuilt.framework")
-        try write("int PrebuiltValue(void);\n", "LocalPods/Prebuilt/Prebuilt.framework/Headers/Prebuilt.h")
+        try write("#import <CoreMedia/CoreMedia.h>\n\nint PrebuiltValue(void);\nCMTime PrebuiltTime(void);\n",
+                  "LocalPods/Prebuilt/Prebuilt.framework/Headers/Prebuilt.h")
+        try write("framework module Prebuilt {\n  umbrella header \"Prebuilt.h\"\n  export *\n}\n",
+                  "LocalPods/Prebuilt/Prebuilt.framework/Modules/module.modulemap")
         let objects = root.appendingPathComponent("objects")
         try FileManager.default.createDirectory(at: objects, withIntermediateDirectories: true)
         let source = objects.appendingPathComponent("Prebuilt.c")
-        try "int SourceValue(void);\nint PrebuiltValue(void) { return SourceValue() + 1; }\n".write(to: source, atomically: true, encoding: .utf8)
+        try """
+        #include <CoreMedia/CoreMedia.h>
+
+        int SourceValue(void);
+        int PrebuiltValue(void) { return SourceValue() + 1; }
+        CMTime PrebuiltTime(void) { return CMTimeMake(1, 1); }
+
+        """.write(to: source, atomically: true, encoding: .utf8)
         var slices: [String] = []
-        for target in ["arm64-apple-ios15.0", "x86_64-apple-ios15.0-simulator"] {
+        for (sdk, target) in [("iphoneos", "arm64-apple-ios15.0"), ("iphonesimulator", "x86_64-apple-ios15.0-simulator")] {
             let object = objects.appendingPathComponent("\(target).o").path
-            try await shell.run("xcrun", ["clang", "-c", "-target", target, source.path, "-o", object])
+            try await shell.run("xcrun", ["--sdk", sdk, "clang", "-c", "-target", target, source.path, "-o", object])
             slices.append(object)
         }
         try await shell.run("xcrun", ["lipo", "-create"] + slices + ["-output", framework.appendingPathComponent("Prebuilt").path])

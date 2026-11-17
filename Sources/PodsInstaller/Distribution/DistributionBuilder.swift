@@ -107,7 +107,8 @@ public struct DistributionBuilder: Sendable {
             dependencies: try Self.packageDependencies(declared: podfile.swiftPackages, unifications: analysis.unifications,
                                                        resolved: analysis.swiftPackages)
         )
-        let commonExports = DistributionManifest.renderCommonExports(layout: layout)
+        let sourcePods = Set(plan.podTargets.filter(\.shouldBuild).map(\.podName))
+        let commonExports = DistributionManifest.renderCommonExports(layout: layout, libraries: sourcePods)
         for directory in [projectDirectory, output] {
             let exports = directory.appendingPathComponent("Sources/Common/export.swift")
             try FileManager.default.createDirectory(at: exports.deletingLastPathComponent(), withIntermediateDirectories: true)

@@ -4,7 +4,9 @@ import PodsCore
 /// Checks that every product of a distribution package links on its own, before anything is uploaded: for each
 /// product, an iOS executable that depends on that product only is built for the simulator and the device, linked
 /// with `-ObjC -all_load` as consumers are told to. `-all_load` loads every member of every linked library, so a
-/// symbol any of them needs from a binary target the product lacks shows up as undefined.
+/// symbol any of them needs from a binary target the product lacks shows up as undefined. The executable imports
+/// the product's module when it has one, as consumers do: prebuilt objects often carry no autolink entries, so the
+/// system frameworks they need are linked only through the modules their headers import.
 struct ProductLinkVerifier {
     let shell: Shell
     /// Scratch space; each product gets a subdirectory, replaced on every run, next to the shared package clones.
@@ -28,7 +30,8 @@ struct ProductLinkVerifier {
             let scratch = workDirectory.appendingPathComponent(product)
             if FileManager.default.fileExists(atPath: scratch.path) { try FileManager.default.removeItem(at: scratch) }
             let package = try writePackage(manifest: manifest, from: packageDirectory, in: scratch.appendingPathComponent(Self.packageName))
-            let app = try writeApp(product: product, package: package, in: scratch.appendingPathComponent(Self.appName))
+            let app = try writeApp(product: product, importsModule: Self.hasModule(product, in: packageDirectory), package: package,
+                                   in: scratch.appendingPathComponent(Self.appName))
             for (name, destination) in Self.destinations {
                 let result = try await shell.execute([
                     "xcrun", "xcodebuild", "build", "-scheme", Self.appName, "-destination", destination,
@@ -67,7 +70,17 @@ struct ProductLinkVerifier {
         return directory
     }
 
-    private func writeApp(product: String, package: URL, in directory: URL) throws -> URL {
+    /// Whether `<product>.xcframework` in `packageDirectory` holds a framework with a module map. Library
+    /// xcframeworks (source pods) have none.
+    static func hasModule(_ product: String, in packageDirectory: URL) -> Bool {
+        let xcframework = packageDirectory.appendingPathComponent("\(product).xcframework")
+        let slices = (try? FileManager.default.contentsOfDirectory(atPath: xcframework.path)) ?? []
+        return slices.contains { slice in
+            FileManager.default.fileExists(atPath: xcframework.appendingPathComponent("\(slice)/\(product).framework/Modules/module.modulemap").path)
+        }
+    }
+
+    private func writeApp(product: String, importsModule: Bool, package: URL, in directory: URL) throws -> URL {
         let sources = directory.appendingPathComponent("Sources/\(Self.appName)")
         try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
         try """
@@ -87,7 +100,8 @@ struct ProductLinkVerifier {
         )
 
         """.write(to: directory.appendingPathComponent("Package.swift"), atomically: true, encoding: .utf8)
-        try "print(\"linked\")\n".write(to: sources.appendingPathComponent("main.swift"), atomically: true, encoding: .utf8)
+        try ((importsModule ? "import \(product)\n" : "") + "print(\"linked\")\n")
+            .write(to: sources.appendingPathComponent("main.swift"), atomically: true, encoding: .utf8)
         return directory
     }
 

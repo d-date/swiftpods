@@ -72,9 +72,11 @@ struct DistributionManifest {
         return lines.joined(separator: "\n")
     }
 
-    /// Sources/Common/export.swift: one `@_exported import <M>` per Common binary target, sorted.
-    static func renderCommonExports(layout: DistributionLayout) -> String {
-        layout.commonTargets.sorted().map { "@_exported import \($0)\n" }.joined()
+    /// Sources/Common/export.swift: one `@_exported import <M>` per Common binary target that is a framework, sorted.
+    /// - Parameter libraries: binary targets that are library xcframeworks (source pods); they have no module map,
+    ///   so they cannot be imported and are only linked through Common's dependencies.
+    static func renderCommonExports(layout: DistributionLayout, libraries: Set<String>) -> String {
+        layout.commonTargets.filter { !libraries.contains($0) }.sorted().map { "@_exported import \($0)\n" }.joined()
     }
 
     private static func requirement(_ requirement: DistributionRequirement) -> String {

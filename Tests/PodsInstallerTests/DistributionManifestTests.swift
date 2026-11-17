@@ -145,7 +145,15 @@ let package = Package(
 
     @Test func commonExportsSorted() {
         let layout = DistributionLayout(products: [], commonTargets: ["Zeta", "Alpha"], binaryTargets: [], unifiedPackageURLs: [], warnings: [])
-        #expect(DistributionManifest.renderCommonExports(layout: layout) == "@_exported import Alpha\n@_exported import Zeta\n")
+        #expect(DistributionManifest.renderCommonExports(layout: layout, libraries: []) == "@_exported import Alpha\n@_exported import Zeta\n")
+    }
+
+    /// Source pods become library xcframeworks without a module map, which `import` cannot find; the consumer
+    /// links them through Common's dependencies and uses their headers through the frameworks that import them.
+    @Test func commonExportsSkipLibraries() {
+        let layout = DistributionLayout(products: [], commonTargets: ["Framework", "Library"], binaryTargets: [], unifiedPackageURLs: [], warnings: [])
+        #expect(DistributionManifest.renderCommonExports(layout: layout, libraries: ["Library"]) == "@_exported import Framework\n")
+        #expect(DistributionManifest.renderCommonExports(layout: layout, libraries: ["Framework", "Library"]) == "")
     }
 }
 
