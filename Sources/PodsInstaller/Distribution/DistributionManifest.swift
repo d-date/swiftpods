@@ -53,12 +53,12 @@ struct DistributionManifest {
         }
         lines += ["  ],", "  targets: ["]
         for name in layout.binaryTargets {
-            precondition(checksums[name] != nil, "No checksum for binary target \(name)")
+            guard let checksum = checksums[name] else { preconditionFailure("No checksum for binary target \(name)") }
             lines += [
                 "    .binaryTarget(",
                 "      name: \(literal(name)),",
                 "      url: \(literal("\(baseURL)/releases/download/\(version)/\(name).xcframework.zip")),",
-                "      checksum: \(literal(checksums[name] ?? ""))),",
+                "      checksum: \(literal(checksum))),",
             ]
         }
         let commonDependencies = layout.commonTargets.map(literal) + dependencies.flatMap { dependency in
@@ -85,7 +85,7 @@ struct DistributionManifest {
         }
     }
 
-    /// SwiftPM's package identity: last path component without `.git`, in the case of the URL.
+    /// SwiftPM's package identity: last path component without `.git`, as written in the URL (SwiftPM matches `.product(package:)` against the identity case-insensitively).
     private static func identity(of url: String) -> String {
         var name = url.split(separator: "/").last.map(String.init) ?? url
         if name.hasSuffix(".git") { name.removeLast(4) }
