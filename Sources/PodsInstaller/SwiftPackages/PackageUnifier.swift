@@ -24,18 +24,35 @@ struct PackageUnifier {
         let podfileRequirement: Requirement?
         /// SwiftPM version → commit (tags that `swiftPMVersion(fromTag:)` accepts).
         let commits: [Version: String]
+        /// Set when Podfile.swift lets this package leave the versions the pods accept.
+        let unsafeOverrideReason: String?
+
+        init(url: String, identity: String, podfileRequirement: Requirement?, commits: [Version: String], unsafeOverrideReason: String? = nil) {
+            self.url = url
+            self.identity = identity
+            self.podfileRequirement = podfileRequirement
+            self.commits = commits
+            self.unsafeOverrideReason = unsafeOverrideReason
+        }
     }
 
     struct Unification: Sendable, Equatable {
         let podRoot: String
         let packageURL: String
-        /// Ascending.
+        /// Ascending. Equal to `podAcceptedVersions`, except with an unsafe override: then every tagged version
+        /// that satisfies the Podfile requirement, whether or not a pod version accepts its commit.
         let allowedVersions: [Version]
+        /// With an unsafe override, the bounds of the Podfile requirement; otherwise those of `allowedVersions`.
         let lowerBound: Version
-        /// Exclusive: the highest allowed version with its patch component + 1.
+        /// Exclusive: the highest allowed version with its patch component + 1 (or the Podfile upper bound with an unsafe override).
         let upperBound: Version
         /// Commits of the allowed versions.
         let allowedCommits: Set<String>
+        /// Ascending: every tagged release version of the package.
+        let taggedVersions: [Version]
+        /// Ascending: versions tagged at the commit of a pod version that satisfies the pod requirements and the Podfile requirement.
+        let podAcceptedVersions: [Version]
+        let unsafeOverrideReason: String?
     }
 
     static func unify(pods: [PodCandidate], packages: [PackageCandidate]) throws(PodsError) -> [Unification] {
@@ -74,24 +91,32 @@ struct PackageUnifier {
             let acceptedCommits = Set(pod.commits.filter { version, _ in
                 pod.requirements.allSatisfy { $0.requirement.isSatisfied(by: version) }
             }.values)
-            let allowed = package.commits
-                .filter { version, commit in
-                    !version.isPreRelease
-                        && package.podfileRequirement?.isSatisfied(by: version) != false
-                        && acceptedCommits.contains(commit)
+            let tagged = package.commits.keys.filter { !$0.isPreRelease }.sorted()
+            let withinPodfile = tagged.filter { package.podfileRequirement?.isSatisfied(by: $0) != false }
+            let podAccepted = withinPodfile.filter { acceptedCommits.contains(package.commits[$0]!) }
+            let allowed: [Version]
+            let bounds: (lower: Version, upper: Version)
+            if package.unsafeOverrideReason != nil, let podfileRequirement = package.podfileRequirement {
+                allowed = withinPodfile
+                // Resolved within the declared range, not narrowed.
+                bounds = try SwiftPackageResolver.range(of: podfileRequirement, url: package.url)
+            } else {
+                guard let lowest = podAccepted.first, let highest = podAccepted.last else {
+                    throw conflict(pod: pod, package: package)
                 }
-                .keys
-                .sorted()
-            guard let lowest = allowed.first, let highest = allowed.last else {
-                throw conflict(pod: pod, package: package)
+                allowed = podAccepted
+                bounds = (lowest, Version(highest.major, highest.minor, highest.patch + 1))
             }
             unifications.append(Unification(
                 podRoot: pod.root,
                 packageURL: package.url,
                 allowedVersions: allowed,
-                lowerBound: lowest,
-                upperBound: Version(highest.major, highest.minor, highest.patch + 1),
-                allowedCommits: Set(allowed.compactMap { package.commits[$0] })
+                lowerBound: bounds.lower,
+                upperBound: bounds.upper,
+                allowedCommits: Set(allowed.compactMap { package.commits[$0] }),
+                taggedVersions: tagged,
+                podAcceptedVersions: podAccepted,
+                unsafeOverrideReason: package.unsafeOverrideReason
             ))
         }
         return unifications.sorted { $0.podRoot < $1.podRoot }
@@ -113,6 +138,15 @@ struct PackageUnifier {
                     + "of any acceptable version of pod '\(unification.podRoot)'."
             )
         }
+    }
+
+    /// The warning for a version that only an unsafe override allows; nil when the pod accepts `resolved` or there is no override.
+    static func unsafeOverrideWarning(_ unification: Unification, pod: PodCandidate, resolved: Version) -> String? {
+        guard let reason = unification.unsafeOverrideReason, !unification.podAcceptedVersions.contains(resolved) else { return nil }
+        let requirements = pod.requirements.map(\.requirement.description).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+        return "Swift package \(unification.packageURL) \(resolved) is outside the versions pod '\(pod.root)' accepts "
+            + "(\(requirements.joined(separator: "; "))); allowed by an unsafe override in Podfile.swift: \(reason). "
+            + "ABI compatibility is not verified."
     }
 
     /// The second resolution only narrows ranges, but a narrowed version may depend on packages the first one did not have.

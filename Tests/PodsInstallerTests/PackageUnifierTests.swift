@@ -32,7 +32,10 @@ struct PackageUnifierTests {
                 allowedVersions: [Version(3, 3, 2), Version(3, 5, 0)],
                 lowerBound: Version(3, 3, 2),
                 upperBound: Version(3, 5, 1),
-                allowedCommits: ["c1", "c2"]
+                allowedCommits: ["c1", "c2"],
+                taggedVersions: [Version(3, 3, 2), Version(3, 5, 0), Version(4, 0, 0)],
+                podAcceptedVersions: [Version(3, 3, 2), Version(3, 5, 0)],
+                unsafeOverrideReason: nil
             ),
         ])
     }
@@ -223,7 +226,10 @@ struct PackageUnifierTests {
             allowedVersions: [Version(8, 0, 0), Version(8, 2, 0)],
             lowerBound: Version(8, 0, 0),
             upperBound: Version(8, 2, 1),
-            allowedCommits: ["c0", "c2"]
+            allowedCommits: ["c0", "c2"],
+            taggedVersions: [Version(8, 0, 0), Version(8, 1, 0), Version(8, 2, 0)],
+            podAcceptedVersions: [Version(8, 0, 0), Version(8, 2, 0)],
+            unsafeOverrideReason: nil
         )
         #expect(throws: PodsError.self) {
             try PackageUnifier.verify(unification, resolved: Version(8, 1, 0), revision: "c1")
@@ -238,12 +244,66 @@ struct PackageUnifierTests {
             allowedVersions: [Version(8, 0, 0)],
             lowerBound: Version(8, 0, 0),
             upperBound: Version(8, 0, 1),
-            allowedCommits: ["c0"]
+            allowedCommits: ["c0"],
+            taggedVersions: [Version(8, 0, 0)],
+            podAcceptedVersions: [Version(8, 0, 0)],
+            unsafeOverrideReason: nil
         )
         // The tag was moved to another commit after the tags were listed.
         let error = #expect(throws: PodsError.self) {
             try PackageUnifier.verify(unification, resolved: Version(8, 0, 0), revision: "moved")
         }
         #expect(error?.message.contains("moved") == true)
+    }
+
+    func overriddenLib(podCommits: [Version: String]) throws -> (PackageUnifier.PodCandidate, PackageUnifier.PackageCandidate) {
+        let pod = PackageUnifier.PodCandidate(
+            root: "Lib",
+            requirements: [(origin: "Binary", requirement: try Requirement(parsing: "< 2.0"))],
+            commits: podCommits,
+            repository: "https://example.com/Lib"
+        )
+        let package = PackageUnifier.PackageCandidate(
+            url: "https://example.com/Lib.git",
+            identity: "lib",
+            podfileRequirement: try Requirement(parsing: ">= 1.0.0, < 3.0.0"),
+            commits: [Version(1, 0, 0): "c1", Version(2, 0, 0): "c2"],
+            unsafeOverrideReason: "r"
+        )
+        return (pod, package)
+    }
+
+    @Test func overrideAllowsVersionsOutsidePodRange() throws {
+        let (pod, package) = try overriddenLib(podCommits: [Version(1, 0, 0): "c1"])
+        let u = try #require(try PackageUnifier.unify(pods: [pod], packages: [package]).first)
+        #expect(u.allowedVersions == [Version(1, 0, 0), Version(2, 0, 0)])
+        #expect(u.allowedCommits == ["c1", "c2"])
+        #expect(u.podAcceptedVersions == [Version(1, 0, 0)])
+        #expect(u.taggedVersions == [Version(1, 0, 0), Version(2, 0, 0)])
+        #expect(u.unsafeOverrideReason == "r")
+        // Resolved within the declared range, not narrowed to the allowed versions.
+        #expect(u.lowerBound == Version(1, 0, 0))
+        #expect(u.upperBound == Version(3, 0, 0))
+        try PackageUnifier.verify(u, resolved: Version(2, 0, 0), revision: "c2")
+    }
+
+    @Test func overrideWithNoCommitMatchIsNotAConflict() throws {
+        // The pod's only version accepted by `< 2.0` has no matching tag.
+        let (pod, package) = try overriddenLib(podCommits: [Version(1, 5, 0): "cX"])
+        let u = try #require(try PackageUnifier.unify(pods: [pod], packages: [package]).first)
+        #expect(u.podAcceptedVersions == [])
+        #expect(u.allowedVersions == [Version(1, 0, 0), Version(2, 0, 0)])
+    }
+
+    @Test func overrideWarningOnlyOutsidePodAcceptedVersions() throws {
+        let (pod, package) = try overriddenLib(podCommits: [Version(1, 0, 0): "c1"])
+        let u = try #require(try PackageUnifier.unify(pods: [pod], packages: [package]).first)
+        #expect(PackageUnifier.unsafeOverrideWarning(u, pod: pod, resolved: Version(1, 0, 0)) == nil)
+        #expect(PackageUnifier.unsafeOverrideWarning(u, pod: pod, resolved: Version(2, 0, 0)) ==
+            "Swift package https://example.com/Lib.git 2.0.0 is outside the versions pod 'Lib' accepts (< 2.0); "
+            + "allowed by an unsafe override in Podfile.swift: r. ABI compatibility is not verified.")
+        // Without an override there is never a warning.
+        let strict = try #require(try PackageUnifier.unify(pods: [try gtmPod()], packages: [gtmPackage()]).first)
+        #expect(PackageUnifier.unsafeOverrideWarning(strict, pod: try gtmPod(), resolved: Version(4, 0, 0)) == nil)
     }
 }

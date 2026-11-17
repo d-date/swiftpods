@@ -279,7 +279,8 @@ struct Analyzer {
                         guard let version = GitTagIndex.swiftPMVersion(fromTag: tag), commits[version] == nil else { continue }
                         commits[version] = commit
                     }
-                    return PackageUnifier.PackageCandidate(url: url, identity: pin.identity, podfileRequirement: declared?.requirement, commits: commits)
+                    return PackageUnifier.PackageCandidate(url: url, identity: pin.identity, podfileRequirement: declared?.requirement, commits: commits,
+                                                           unsafeOverrideReason: declared?.unsafeOverrideReason)
                 }
             }
             var result: [PackageUnifier.PackageCandidate] = []
@@ -314,6 +315,10 @@ struct Analyzer {
                 throw PodsError("Swift package \(unification.packageURL) is missing from the resolved packages.")
             }
             try PackageUnifier.verify(unification, resolved: pin.version, revision: pin.revision)
+            if unification.unsafeOverrideReason != nil, let pod = candidates.first(where: { $0.root == unification.podRoot }),
+               let warning = PackageUnifier.unsafeOverrideWarning(unification, pod: pod, resolved: pin.version) {
+                context.ui.warn(warning)
+            }
         }
         return (unifications, second)
     }

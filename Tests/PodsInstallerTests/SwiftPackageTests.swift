@@ -118,11 +118,12 @@ struct SwiftPackageTests {
 
     /// Writes `Podfile.json` with target `App` depending on `Binary` and the given `swift_packages`.
     /// `products` are `swift_package_products` of `App`; `usesFrameworks` turns on `use_frameworks!` (dynamic);
-    /// `dependencies` are more dependency entries of `App`, as JSON.
+    /// `dependencies` are more dependency entries of `App`, as JSON; `unsafeOverrides` maps a package URL to its override reason.
     private func writePodfile(packages: [(url: String, requirement: [String])], products: [(name: String, package: String)] = [],
-                              usesFrameworks: Bool = false, dependencies: [String] = []) throws {
+                              usesFrameworks: Bool = false, dependencies: [String] = [], unsafeOverrides: [String: String] = [:]) throws {
         let packagesJSON = packages.map { package in
-            #"{"url":"\#(package.url)","requirement":[\#(package.requirement.map { #""\#($0)""# }.joined(separator: ","))]}"#
+            let override = unsafeOverrides[package.url].map { #","unsafe_override":{"reason":"\#($0)"}"# } ?? ""
+            return #"{"url":"\#(package.url)","requirement":[\#(package.requirement.map { #""\#($0)""# }.joined(separator: ","))]\#(override)}"#
         }.joined(separator: ",")
         let productsJSON = products.map { #"{"name":"\#($0.name)","package":"\#($0.package)"}"# }.joined(separator: ",")
         try """
@@ -474,6 +475,43 @@ struct SwiftPackageTests {
         let analysis = try await analyze(specs: [fixture.libSpec("1.0.0"), fixture.libSpec("2.0.0")])
         #expect(analysis.unifications.first?.allowedVersions == [Version(1, 0, 0)])
         #expect(analysis.swiftPackages?.pins.map(\.version) == [Version(1, 0, 0)])
+    }
+
+    @Test func unsafeOverrideInstallsAndWarns() async throws {
+        let fixture = try await SwiftPackageFixture.create(in: root)
+        try writePodfile(packages: [(fixture.libURL, [">= 1.0.0", "< 3.0.0"])], unsafeOverrides: [fixture.libURL: "checked"])
+        let ui = UI.capturing()
+        let context = try InstallerContext(projectDirectory: root, cacheRoot: cache, ui: ui,
+                                           sources: SourcesManager(sources: [try MemorySource([fixture.libSpec("1.0.0"), fixture.libSpec("2.0.0")])]),
+                                           shell: SwiftPackageFixture.shell)
+        try await Installer(context: context, options: InstallOptions(update: .all)).install()
+
+        let lockfile = try Lockfile(contentsOf: root.appendingPathComponent("Podfile.lock"))
+        let package = try #require(lockfile.swiftPackages.first)
+        #expect(package.version == Version(2, 0, 0))
+        #expect(package.pods == ["Lib"])
+        let warnings = ui.warnings.filter { $0.contains("unsafe override") }
+        #expect(warnings.count == 1)
+        let warning = try #require(warnings.first)
+        #expect(warning.contains(fixture.libURL))
+        #expect(warning.contains("2.0.0"))
+        #expect(warning.contains("checked"))
+        #expect(warning.contains("ABI compatibility is not verified"))
+    }
+
+    @Test func unsafeOverrideInsidePodRangeDoesNotWarn() async throws {
+        // A strict install pins `lib` 1.0.0; the override then keeps that pin.
+        let fixture = try await installUnifiedLib()
+        try writePodfile(packages: [(fixture.libURL, [">= 1.0.0", "< 3.0.0"])], unsafeOverrides: [fixture.libURL: "checked"])
+        let ui = UI.capturing()
+        let context = try InstallerContext(projectDirectory: root, cacheRoot: cache, ui: ui,
+                                           sources: SourcesManager(sources: [try MemorySource([fixture.libSpec("1.0.0"), fixture.libSpec("2.0.0")])]),
+                                           shell: SwiftPackageFixture.shell)
+        let analysis = try await Analyzer(context: context, options: InstallOptions()).analyze()
+
+        #expect(analysis.swiftPackages?.pins.first { $0.identity == "lib" }?.version == Version(1, 0, 0))
+        #expect(analysis.unifications.first?.allowedVersions == [Version(1, 0, 0), Version(2, 0, 0)])
+        #expect(!ui.warnings.contains { $0.contains("unsafe override") })
     }
 
     @Test func dropsPodsOnlyReachableThroughUnifiedPods() async throws {

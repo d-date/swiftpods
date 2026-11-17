@@ -148,7 +148,7 @@ struct SwiftPackageResolver {
     }
 
     /// Converts a CocoaPods-style requirement to a half-open SwiftPM range.
-    static func range(of requirement: Requirement, url: String) throws -> (lower: Version, upper: Version) {
+    static func range(of requirement: Requirement, url: String) throws(PodsError) -> (lower: Version, upper: Version) {
         var lower: Version?
         var upper: Version?
         func raiseLower(_ version: Version) { if lower.map({ version > $0 }) ?? true { lower = version } }
