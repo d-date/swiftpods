@@ -166,6 +166,80 @@ struct XCFrameworkAssemblerTests {
         #expect(try await shell.run("xcrun", ["nm", binary.path]).stdout.contains("_simulatorOnly"))
     }
 
+    enum DevicePlatformCommand: String, CaseIterable { case versionMin, none }
+
+    @Test(arguments: DevicePlatformCommand.allCases)
+    func deviceSliceWithoutBuildVersionIsClassifiedByArch(_ command: DevicePlatformCommand) async throws {
+        let device: URL
+        switch command {
+        case .versionMin:
+            // Deployment targets this old make clang emit LC_VERSION_MIN_IPHONEOS instead of LC_BUILD_VERSION.
+            device = try await object("device", source: "int fixture(void) { return 1; }\n", target: "arm64-apple-ios9.0")
+        case .none:
+            let modern = try await object("device", source: "int fixture(void) { return 1; }\n", target: "arm64-apple-ios15.0")
+            device = root.appendingPathComponent("objects/device-bare.o")
+            try await shell.run("xcrun", ["vtool", "-arch", "arm64", "-remove-build-version", "2", "-output", device.path, modern.path])
+            let load = try await shell.run("xcrun", ["otool", "-l", device.path]).stdout
+            #expect(!load.contains("LC_BUILD_VERSION") && !load.contains("LC_VERSION_MIN"))
+        }
+        #expect(try MachO.platforms(of: device).isEmpty)
+        let intel = try await object("intel", source: "int fixture(void) { return 2; }\n", target: "x86_64-apple-ios15.0-simulator")
+        let fw = try await framework(at: "pod", slices: [device, intel])
+
+        let xcf = try await assembler.assemblePrebuilt(framework: fw, podVersion: Version(1, 2, 3), minimumOS: "15.0", output: output)
+
+        let libraries = try libraries(of: xcf)
+        #expect(libraries["ios"]?["SupportedArchitectures"] as? [String] == ["arm64"])
+        #expect((libraries["ios-simulator"]?["SupportedArchitectures"] as? [String])?.sorted() == ["arm64", "x86_64"])
+        let deviceBinary = try sliceDirectory(libraries["ios"], in: xcf).appendingPathComponent("Fixture.framework/Fixture")
+        #expect(try MachO.kind(of: deviceBinary) == .archive)
+        #expect(try MachO.platforms(of: deviceBinary) == [2])
+        let simulator = try sliceDirectory(libraries["ios-simulator"], in: xcf).appendingPathComponent("Fixture.framework/Fixture")
+        for arch in ["arm64", "x86_64"] {
+            let slice = try await thin(simulator, arch: arch)
+            #expect(try MachO.kind(of: slice) == .archive, "simulator \(arch)")
+            #expect(try MachO.platforms(of: slice) == [7], "simulator \(arch)")
+        }
+    }
+
+    @Test func dynamicPrebuiltFrameworkThrows() async throws {
+        let directory = root.appendingPathComponent("objects")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = directory.appendingPathComponent("dynamic.c")
+        try "int fixture(void) { return 1; }\n".write(to: source, atomically: true, encoding: .utf8)
+        let dylib = directory.appendingPathComponent("dynamic")
+        try await shell.run("xcrun", ["--sdk", "iphoneos", "clang", "-dynamiclib", "-target", "arm64-apple-ios15.0",
+                                      "-install_name", "@rpath/Fixture.framework/Fixture", source.path, "-o", dylib.path])
+        let fw = try await framework(at: "pod", slices: [dylib])
+
+        let error = await #expect(throws: PodsError.self) {
+            try await assembler.assemblePrebuilt(framework: fw, podVersion: Version(1, 2, 3), minimumOS: "15.0", output: output)
+        }
+
+        #expect(error?.message == "dynamic prebuilt frameworks are not supported by swiftpods package yet: Fixture.framework")
+    }
+
+    @Test func swiftSourcePodThrows() async throws {
+        var frameworks: [URL] = []
+        for (sdk, target) in [("iphoneos", "arm64-apple-ios15.0"), ("iphonesimulator", "arm64-apple-ios15.0-simulator")] {
+            let object = try await object(sdk, source: "int fixture(void) { return 1; }\n", target: target)
+            let archive = object.deletingPathExtension().appendingPathExtension("a")
+            try await shell.run("xcrun", ["libtool", "-static", "-o", archive.path, object.path])
+            let framework = try await framework(at: "build/Release-\(sdk)/Fixture", slices: [archive])
+            try FileManager.default.createDirectory(at: framework.appendingPathComponent("Modules/Fixture.swiftmodule"),
+                                                    withIntermediateDirectories: true)
+            frameworks.append(framework)
+        }
+
+        let error = await #expect(throws: PodsError.self) {
+            try await assembler.assembleSource(module: "Fixture", deviceFramework: frameworks[0],
+                                               simulatorFramework: frameworks[1], output: output)
+        }
+
+        #expect(error?.message == "Swift source pods are not supported by swiftpods package yet: Fixture")
+        #expect(!FileManager.default.fileExists(atPath: output.appendingPathComponent("Fixture.xcframework").path))
+    }
+
     @Test func sourcePodBecomesLibraryXCFramework() async throws {
         var frameworks: [URL] = []
         for (sdk, targets) in [("iphoneos", ["arm64-apple-ios15.0"]),

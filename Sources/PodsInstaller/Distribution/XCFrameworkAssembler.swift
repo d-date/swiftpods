@@ -23,12 +23,27 @@ struct XCFrameworkAssembler {
             case .simulator: "iPhoneSimulator"
             }
         }
+
+        /// The LC_BUILD_VERSION platform number.
+        var platform: UInt32 {
+            switch self {
+            case .device: 2
+            case .simulator: 7
+            }
+        }
+
+        /// The platform name `ld -platform_version` takes.
+        var linkerPlatform: String {
+            switch self {
+            case .device: "ios"
+            case .simulator: "ios-simulator"
+            }
+        }
     }
 
-    private static let devicePlatform: UInt32 = 2
-    private static let simulatorPlatform: UInt32 = 7
     /// Intel slices only ever run in the simulator, whatever their load commands say.
     private static let intelArchs: Set<String> = ["x86_64", "i386"]
+    private static let deviceArchs: Set<String> = ["arm64", "arm64e", "armv7", "armv7s"]
 
     /// A prebuilt `.framework` (device and simulator slices fat in one binary, as vendored by pods):
     /// adds Info.plist when missing, splits per SDK, injects simulator arm64 from device arm64 when absent,
@@ -46,7 +61,20 @@ struct XCFrameworkAssembler {
         for arch in try await archs(of: binary) {
             let thin = thinDirectory.appendingPathComponent(arch)
             try await extract(arch, from: binary, to: thin)
-            slices[try sdk(of: thin, arch: arch, in: binary), default: [:]][arch] = thin
+            guard try MachO.kind(of: thin) != .image else {
+                throw PodsError("dynamic prebuilt frameworks are not supported by swiftpods package yet: \(framework.lastPathComponent)")
+            }
+            let platforms = try MachO.platforms(of: thin)
+            let sdk: SDK
+            if platforms.isEmpty {
+                // No platform load command at all, or only LC_VERSION_MIN_*: the arch decides, and the
+                // slice gets an LC_BUILD_VERSION so the xcframework can be created and patched.
+                sdk = try self.sdk(ofArch: arch, in: binary)
+                try await setBuildVersion(of: thin, arch: arch, sdk: sdk, minimumOS: minimumOS)
+            } else {
+                sdk = try self.sdk(of: platforms, arch: arch, in: binary)
+            }
+            slices[sdk, default: [:]][arch] = thin
         }
 
         // Apple Silicon simulators need arm64 code; the device code runs there once the platform the
@@ -54,7 +82,7 @@ struct XCFrameworkAssembler {
         if slices[.simulator]?["arm64"] == nil, let deviceArm64 = slices[.device]?["arm64"] {
             let injected = thinDirectory.appendingPathComponent("arm64-simulator")
             try FileManager.default.copyItem(at: deviceArm64, to: injected)
-            try MachO.rewritePlatform(of: injected, to: Self.simulatorPlatform)
+            try MachO.rewritePlatform(of: injected, to: SDK.simulator.platform)
             slices[.simulator, default: [:]]["arm64"] = injected
         }
 
@@ -89,6 +117,13 @@ struct XCFrameworkAssembler {
     /// Xcode embed a stub, which App Store review rejects for common third-party SDKs (ITMS-91065).
     /// - Returns: `<output>/<module>.xcframework`.
     func assembleSource(module: String, deviceFramework: URL, simulatorFramework: URL, output: URL) async throws -> URL {
+        for framework in [deviceFramework, simulatorFramework] {
+            let modules = framework.appendingPathComponent("Modules")
+            let contents = (try? FileManager.default.contentsOfDirectory(atPath: modules.path)) ?? []
+            if contents.contains(where: { $0.hasSuffix(".swiftmodule") }) {
+                throw PodsError("Swift source pods are not supported by swiftpods package yet: \(module)")
+            }
+        }
         let staging = try reset(workDirectory.appendingPathComponent("source").appendingPathComponent(module))
         var arguments = ["xcodebuild", "-create-xcframework"]
         for (sdk, framework) in [(SDK.device, deviceFramework), (.simulator, simulatorFramework)] {
@@ -139,13 +174,43 @@ struct XCFrameworkAssembler {
         }
     }
 
-    private func sdk(of thin: URL, arch: String, in binary: URL) throws -> SDK {
+    private func sdk(of platforms: Set<UInt32>, arch: String, in binary: URL) throws -> SDK {
         if Self.intelArchs.contains(arch) { return .simulator }
-        let platforms = try MachO.platforms(of: thin)
-        if platforms == [Self.devicePlatform] { return .device }
-        if platforms == [Self.simulatorPlatform] { return .simulator }
-        let named = platforms.isEmpty ? "none" : platforms.sorted().map(String.init).joined(separator: ", ")
+        if let sdk = SDK.allCases.first(where: { platforms == [$0.platform] }) { return sdk }
+        let named = platforms.sorted().map(String.init).joined(separator: ", ")
         throw PodsError("Cannot tell whether the \(arch) slice of \(binary.path) is for devices or the simulator (LC_BUILD_VERSION platforms: \(named))")
+    }
+
+    private func sdk(ofArch arch: String, in binary: URL) throws -> SDK {
+        if Self.intelArchs.contains(arch) { return .simulator }
+        if Self.deviceArchs.contains(arch) { return .device }
+        throw PodsError("Cannot tell whether the \(arch) slice of \(binary.path) is for devices or the simulator (no LC_BUILD_VERSION)")
+    }
+
+    /// Gives a thin object file without LC_BUILD_VERSION one for `sdk`, replacing any LC_VERSION_MIN_*.
+    private func setBuildVersion(of thin: URL, arch: String, sdk: SDK, minimumOS: String) async throws {
+        guard try MachO.kind(of: thin) == .object else {
+            throw PodsError("The \(arch) slice \(thin.path) has no LC_BUILD_VERSION and is not an object file; its platform cannot be set")
+        }
+        let sdkVersion = try await shell.run("xcrun", ["--sdk", sdk.directory, "--show-sdk-version"]).stdout.trimmingWhitespace()
+        let patched = thin.appendingPathExtension("platform")
+        let vtool = try await shell.execute(["xcrun", "vtool", "-arch", arch, "-set-build-version", String(sdk.platform),
+                                             minimumOS, sdkVersion, "-replace", "-output", patched.path, thin.path])
+        if vtool.status != 0 {
+            // vtool edits in place and fails when the header has no room for the larger command, which
+            // is the norm for compiler output; relinking the object lays out a new header instead.
+            let linker = try await shell.execute(["xcrun", "ld", "-r", "-arch", arch, "-platform_version", sdk.linkerPlatform,
+                                                  minimumOS, sdkVersion, "-o", patched.path, thin.path])
+            guard linker.status == 0 else {
+                throw PodsError("""
+                Could not set the platform of the \(arch) slice \(thin.path):
+                vtool: \(vtool.stderr.trimmingWhitespace())
+                ld -r: \(linker.stderr.trimmingWhitespace())
+                """)
+            }
+        }
+        try FileManager.default.removeItem(at: thin)
+        try FileManager.default.moveItem(at: patched, to: thin)
     }
 
     /// An `ar` archive of a thin object file, or the file itself when it is not an object file.
