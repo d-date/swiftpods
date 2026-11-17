@@ -21,6 +21,7 @@ extension Podfile {
             root: try Self.targetDefinition(rootJSON)
         )
         self.swiftPackages = try Self.swiftPackages(json["swift_packages"])
+        self.distribution = try Self.distribution(json["distribution"])
         let declared = Set(swiftPackages.map(\.identity))
         for definition in allTargetDefinitions {
             for product in definition.packageProducts where !declared.contains(product.package.lowercased()) {
@@ -86,6 +87,14 @@ extension Podfile {
         return definition
     }
 
+    private static func distribution(_ json: JSON?) throws(FormatError) -> DistributionSettings? {
+        guard let json else { return nil }
+        guard let name = json["name"]?.string, let url = json["url"]?.string else {
+            throw FormatError(message: "`distribution` needs a `name` and a `url`")
+        }
+        return DistributionSettings(name: name, url: url)
+    }
+
     private static func swiftPackages(_ json: JSON?) throws(FormatError) -> [SwiftPackageDependency] {
         var result: [SwiftPackageDependency] = []
         for entry in json?.array ?? [] {
@@ -93,7 +102,10 @@ extension Podfile {
             let constraints = entry["requirement"]?.stringList ?? []
             let package: SwiftPackageDependency
             do {
-                package = SwiftPackageDependency(url: url, requirement: try Requirement(parsing: constraints))
+                package = SwiftPackageDependency(
+                    url: url, requirement: try Requirement(parsing: constraints),
+                    unsafeOverrideReason: entry["unsafe_override"]?["reason"]?.string
+                )
             } catch {
                 throw FormatError(message: "invalid requirement for package `\(url)`: \(constraints.joined(separator: ", "))")
             }

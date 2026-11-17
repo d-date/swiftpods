@@ -87,6 +87,28 @@ struct PodfileTests {
         }
     }
 
+    @Test func jsonPodfileReadsUnsafeOverrideAndDistribution() throws {
+        let json = try JSON(parsing: """
+        {"distribution":{"name":"Kit","url":"https://github.com/o/kit"},
+        "swift_packages":[{"url":"https://github.com/google/gtm-session-fetcher.git","requirement":["~> 3.5"],
+        "unsafe_override":{"reason":"ABI checked in #124"}}],
+        "target_definitions":[{"name":"Pods","abstract":true,"children":[{"name":"App"}]}]}
+        """)
+        let podfile = try Podfile(json: json)
+        #expect(podfile.distribution == DistributionSettings(name: "Kit", url: "https://github.com/o/kit"))
+        #expect(podfile.swiftPackages.first?.unsafeOverrideReason == "ABI checked in #124")
+    }
+
+    @Test func packageWithoutOverrideHasNoReason() throws {
+        let json = try JSON(parsing: """
+        {"swift_packages":[{"url":"https://github.com/google/promises.git","requirement":["~> 2.4"]}],
+        "target_definitions":[{"name":"Pods","abstract":true,"children":[{"name":"App"}]}]}
+        """)
+        let podfile = try Podfile(json: json)
+        #expect(podfile.swiftPackages.first?.unsafeOverrideReason == nil)
+        #expect(podfile.distribution == nil)
+    }
+
     @Test func rejectsDuplicatePackageIdentities() throws {
         // Both URLs have the SwiftPM identity `promises`.
         let json = try JSON(parsing: """

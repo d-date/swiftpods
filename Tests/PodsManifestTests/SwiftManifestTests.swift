@@ -101,6 +101,26 @@ struct SwiftManifestTests {
         #expect(target.packageProducts == [PackageProductDependency(name: "GULLogger", package: "GoogleUtilities")])
     }
 
+    @Test func swiftPodfileDeclaresUnsafeOverrideAndDistribution() async throws {
+        let url = try write("Podfile.swift", """
+        import SwiftPodsDescription
+
+        let podfile = Podfile(
+            platform: .iOS(.v15),
+            packages: [
+                .package(url: "https://github.com/google/gtm-session-fetcher.git", "3.5.0"..<"6.0.0",
+                         overridingPodRequirements: .unsafe(reason: "ABI checked in #124")),
+            ],
+            distribution: .init(name: "Kit", url: "https://github.com/o/kit"),
+            targets: [.target(name: "App")]
+        )
+        """)
+        let json = try await evaluator.evaluatePodfile(at: url)
+        let podfile = try Podfile(json: json)
+        #expect(podfile.distribution == DistributionSettings(name: "Kit", url: "https://github.com/o/kit"))
+        #expect(podfile.swiftPackages.first?.unsafeOverrideReason == "ABI checked in #124")
+    }
+
     @Test func evaluatesPodspec() async throws {
         let url = try write("MyKit.podspec.swift", """
         import SwiftPodsDescription

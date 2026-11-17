@@ -41,6 +41,8 @@ public final class Podfile {
     public var installationOptions: InstallationOptions
     /// SwiftPM packages resolved together with the pods.
     public var packages: [SwiftPackage]
+    /// Settings for generating a distribution `Package.swift`.
+    public var distribution: Distribution?
     /// Pods linked into every target.
     public var dependencies: [Pod]
     public var targets: [Target]
@@ -55,6 +57,7 @@ public final class Podfile {
         workspace: String? = nil,
         installationOptions: InstallationOptions = .init(),
         packages: [SwiftPackage] = [],
+        distribution: Distribution? = nil,
         dependencies: [Pod] = [],
         targets: [Target] = []
     ) {
@@ -67,6 +70,7 @@ public final class Podfile {
         self.workspace = workspace
         self.installationOptions = installationOptions
         self.packages = packages
+        self.distribution = distribution
         self.dependencies = dependencies
         self.targets = targets
         _ManifestRegistry.register(.podfile(self))
@@ -87,6 +91,7 @@ public final class Podfile {
             project: project, dependencies: dependencies, targets: targets
         )
         if !packages.isEmpty { object.append(("swift_packages", .array(packages.map(\.json)))) }
+        if let distribution { object.append(("distribution", distribution.json)) }
         object.append(("target_definitions", .array([root.json])))
         return .object(object)
     }
@@ -360,34 +365,60 @@ public struct Target: Sendable {
 public struct SwiftPackage: Sendable {
     let url: String
     let requirement: [String]
+    let unsafeOverrideReason: String?
 
     /// `from: "8.0.0"` — up to the next major version, like SwiftPM.
-    public static func package(url: String, from version: String) -> SwiftPackage {
-        .package(url: url, .upToNextMajor(from: version))
+    public static func package(url: String, from version: String, overridingPodRequirements override: PodRequirementOverride? = nil) -> SwiftPackage {
+        .package(url: url, .upToNextMajor(from: version), overridingPodRequirements: override)
     }
 
     /// `exact: "8.0.0"`
-    public static func package(url: String, exact version: String) -> SwiftPackage {
-        .package(url: url, .exact(version))
+    public static func package(url: String, exact version: String, overridingPodRequirements override: PodRequirementOverride? = nil) -> SwiftPackage {
+        .package(url: url, .exact(version), overridingPodRequirements: override)
     }
 
     /// `"1.0.0"..<"2.0.0"`
-    public static func package(url: String, _ range: Range<String>) -> SwiftPackage {
-        .package(url: url, .range(range))
+    public static func package(url: String, _ range: Range<String>, overridingPodRequirements override: PodRequirementOverride? = nil) -> SwiftPackage {
+        .package(url: url, .range(range), overridingPodRequirements: override)
     }
 
     /// `"1.0.0"..."1.9.9"`
-    public static func package(url: String, _ range: ClosedRange<String>) -> SwiftPackage {
-        .package(url: url, .range(range))
+    public static func package(url: String, _ range: ClosedRange<String>, overridingPodRequirements override: PodRequirementOverride? = nil) -> SwiftPackage {
+        .package(url: url, .range(range), overridingPodRequirements: override)
     }
 
     /// Any requirement, e.g. `.upToNextMinor(from: "1.2.0")`.
-    public static func package(url: String, _ requirement: VersionRequirement) -> SwiftPackage {
-        SwiftPackage(url: url, requirement: requirement.constraints)
+    public static func package(url: String, _ requirement: VersionRequirement, overridingPodRequirements override: PodRequirementOverride? = nil) -> SwiftPackage {
+        var reason: String?
+        if case .unsafe(let text)? = override { reason = text }
+        return SwiftPackage(url: url, requirement: requirement.constraints, unsafeOverrideReason: reason)
     }
 
     var json: _JSON {
-        .object([("url", .string(url)), ("requirement", .array(requirement.map(_JSON.string)))])
+        var object: [(String, _JSON)] = [("url", .string(url)), ("requirement", .array(requirement.map(_JSON.string)))]
+        if let unsafeOverrideReason { object.append(("unsafe_override", .object([("reason", .string(unsafeOverrideReason))]))) }
+        return .object(object)
+    }
+}
+
+/// Lets a package requirement replace the one the pods impose on it.
+public enum PodRequirementOverride: Sendable {
+    /// Replaces the pods' requirement; `reason` records why that is safe.
+    case unsafe(reason: String)
+}
+
+/// Where and under which name the distribution `Package.swift` is published.
+public struct Distribution: Sendable {
+    let name: String
+    let url: String
+
+    public init(name: String, url: String) {
+        self.name = name
+        self.url = url
+    }
+
+    var json: _JSON {
+        .object([("name", .string(name)), ("url", .string(url))])
     }
 }
 

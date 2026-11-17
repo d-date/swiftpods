@@ -21,10 +21,13 @@ public struct PodDependency: Sendable, Hashable {
 public struct SwiftPackageDependency: Sendable, Hashable {
     public let url: String
     public let requirement: Requirement
+    /// Set when the Podfile deliberately overrides the pods' requirement; holds the stated reason.
+    public let unsafeOverrideReason: String?
 
-    public init(url: String, requirement: Requirement) {
+    public init(url: String, requirement: Requirement, unsafeOverrideReason: String? = nil) {
         self.url = url
         self.requirement = requirement
+        self.unsafeOverrideReason = unsafeOverrideReason
     }
 
     /// The SwiftPM identity: the last path component of the URL without `.git`, lowercased.
@@ -32,6 +35,17 @@ public struct SwiftPackageDependency: Sendable, Hashable {
         var name = url.lastPathComponent
         if name.hasSuffix(".git") { name = String(name.dropLast(4)) }
         return name.lowercased()
+    }
+}
+
+/// Settings for generating a distribution `Package.swift`.
+public struct DistributionSettings: Sendable, Hashable {
+    public let name: String
+    public let url: String
+
+    public init(name: String, url: String) {
+        self.name = name
+        self.url = url
     }
 }
 
@@ -119,6 +133,8 @@ public struct Podfile: Sendable, Hashable {
     public var root: TargetDefinition
     /// SwiftPM packages resolved together with the pods.
     public var swiftPackages: [SwiftPackageDependency] = []
+    /// Distribution `Package.swift` settings, if declared.
+    public var distribution: DistributionSettings?
     /// Ruby hooks (`post_install`, ...) that were declared but cannot be run.
     public var unsupportedHooks: [String] = []
     /// Plugins (`plugin 'cocoapods-keys'`) that were declared but are not supported.
