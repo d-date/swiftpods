@@ -199,8 +199,10 @@ struct XCFrameworkAssembler {
         if vtool.status != 0 {
             // vtool edits in place and fails when the header has no room for the larger command, which
             // is the norm for compiler output; relinking the object lays out a new header instead.
-            let linker = try await shell.execute(["xcrun", "ld", "-r", "-arch", arch, "-platform_version", sdk.linkerPlatform,
-                                                  minimumOS, sdkVersion, "-o", patched.path, thin.path])
+            // `-keep_private_externs` keeps hidden symbols linkable from the rest of the library.
+            let linker = try await shell.execute(["xcrun", "ld", "-r", "-keep_private_externs", "-arch", arch,
+                                                  "-platform_version", sdk.linkerPlatform, minimumOS, sdkVersion,
+                                                  "-o", patched.path, thin.path])
             guard linker.status == 0 else {
                 throw PodsError("""
                 Could not set the platform of the \(arch) slice \(thin.path):

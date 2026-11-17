@@ -170,19 +170,23 @@ struct XCFrameworkAssemblerTests {
 
     @Test(arguments: DevicePlatformCommand.allCases)
     func deviceSliceWithoutBuildVersionIsClassifiedByArch(_ command: DevicePlatformCommand) async throws {
+        // A hidden symbol must stay a private external; relinking can otherwise demote it.
+        let source = "__attribute__((visibility(\"hidden\"))) int helper(void) { return 7; }\nint fixture(void) { return helper(); }\n"
         let device: URL
         switch command {
         case .versionMin:
             // Deployment targets this old make clang emit LC_VERSION_MIN_IPHONEOS instead of LC_BUILD_VERSION.
-            device = try await object("device", source: "int fixture(void) { return 1; }\n", target: "arm64-apple-ios9.0")
+            device = try await object("device", source: source, target: "arm64-apple-ios9.0")
         case .none:
-            let modern = try await object("device", source: "int fixture(void) { return 1; }\n", target: "arm64-apple-ios15.0")
+            let modern = try await object("device", source: source, target: "arm64-apple-ios15.0")
             device = root.appendingPathComponent("objects/device-bare.o")
             try await shell.run("xcrun", ["vtool", "-arch", "arm64", "-remove-build-version", "2", "-output", device.path, modern.path])
             let load = try await shell.run("xcrun", ["otool", "-l", device.path]).stdout
             #expect(!load.contains("LC_BUILD_VERSION") && !load.contains("LC_VERSION_MIN"))
         }
         #expect(try MachO.platforms(of: device).isEmpty)
+        let symbolsBefore = try await symbols(of: device)
+        #expect(symbolsBefore.contains { $0.hasSuffix("(__TEXT,__text) private external _helper") })
         let intel = try await object("intel", source: "int fixture(void) { return 2; }\n", target: "x86_64-apple-ios15.0-simulator")
         let fw = try await framework(at: "pod", slices: [device, intel])
 
@@ -194,12 +198,22 @@ struct XCFrameworkAssemblerTests {
         let deviceBinary = try sliceDirectory(libraries["ios"], in: xcf).appendingPathComponent("Fixture.framework/Fixture")
         #expect(try MachO.kind(of: deviceBinary) == .archive)
         #expect(try MachO.platforms(of: deviceBinary) == [2])
+        #expect(try await symbols(of: deviceBinary) == symbolsBefore)
         let simulator = try sliceDirectory(libraries["ios-simulator"], in: xcf).appendingPathComponent("Fixture.framework/Fixture")
         for arch in ["arm64", "x86_64"] {
             let slice = try await thin(simulator, arch: arch)
             #expect(try MachO.kind(of: slice) == .archive, "simulator \(arch)")
             #expect(try MachO.platforms(of: slice) == [7], "simulator \(arch)")
+            if arch == "arm64" { #expect(try await symbols(of: slice) == symbolsBefore) }
         }
+    }
+
+    /// The `nm -m` symbol lines of an object or archive, without archive member headers and without the
+    /// assembler's local `ltmp<N>` section labels, which every link (including `ld -r`) drops.
+    private func symbols(of file: URL) async throws -> [String] {
+        try await shell.run("xcrun", ["nm", "-m", file.path]).stdout
+            .split(separator: "\n").map(String.init)
+            .filter { !$0.isEmpty && !$0.hasSuffix(":") && !$0.contains(" non-external ltmp") }
     }
 
     @Test func dynamicPrebuiltFrameworkThrows() async throws {
