@@ -27,20 +27,22 @@ struct DistributionLayout: Equatable, Sendable {
         unified: [String: String]
     ) -> DistributionLayout {
         var warnings: [String] = []
+        // Unified pods are Swift packages, never binary targets, even if they also produce a binary.
+        let binaries = podsWithBinary.subtracting(unified.keys)
         // Product name to the node names its closure starts from, in declaration order.
         var productStarts: [(name: String, starts: [String])] = []
 
         for dependency in declared {
             let root = rootName(dependency)
-            guard dependency != root else {
+            if dependency == root, binaries.contains(root) {
                 addProduct(root, starts: [dependency], to: &productStarts)
                 continue
             }
-            // Roots the subspec depends on directly, outside its own root.
+            // Roots the declared pod depends on directly, outside its own root.
             var edgesByRoot: [String: [String]] = [:]
             for target in dependencies[dependency] ?? [] {
                 let targetRoot = rootName(target)
-                if targetRoot != root, podsWithBinary.contains(targetRoot) { edgesByRoot[targetRoot, default: []].append(target) }
+                if targetRoot != root, binaries.contains(targetRoot) { edgesByRoot[targetRoot, default: []].append(target) }
             }
             let roots = edgesByRoot.keys.sorted()
             if let first = roots.first {
@@ -48,7 +50,7 @@ struct DistributionLayout: Equatable, Sendable {
                     warnings.append("\(dependency) depends on several binary pods (\(roots.joined(separator: ", "))); using \(first) as its product and ignoring \(roots.dropFirst().joined(separator: ", ")).")
                 }
                 addProduct(first, starts: edgesByRoot[first] ?? [], to: &productStarts)
-            } else if podsWithBinary.contains(root) {
+            } else if binaries.contains(root) {
                 addProduct(root, starts: [dependency], to: &productStarts)
             } else {
                 warnings.append("\(dependency) has no binary target, so no product is generated for it.")
@@ -58,7 +60,7 @@ struct DistributionLayout: Equatable, Sendable {
         var closures: [String: Set<String>] = [:]
         for (name, starts) in productStarts {
             let roots = Set(reachable(from: starts, dependencies: dependencies).map(rootName))
-            let closure = roots.intersection(podsWithBinary)
+            let closure = roots.intersection(binaries)
             if closure.isEmpty {
                 warnings.append("\(name) has no binary target, so no product is generated for it.")
             } else {
@@ -69,6 +71,8 @@ struct DistributionLayout: Equatable, Sendable {
 
         var common = closures.values.first ?? []
         for closure in closures.values { common.formIntersection(closure) }
+        // A product stays a target of every product that depends on it, so it never belongs to Common.
+        common.subtract(productNames)
 
         let products = productNames.map { name in
             let rest = closures[name, default: []].subtracting(common).subtracting([name]).sorted()

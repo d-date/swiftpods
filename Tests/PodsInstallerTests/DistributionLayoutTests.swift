@@ -125,4 +125,58 @@ struct DistributionLayoutTests {
         #expect(layout.warnings.count == 1)
         #expect(layout.warnings.first?.contains("Zeta") == true)
     }
+
+    @Test func declaredUmbrellaRootWithoutBinaryUsesItsBinaryDependency() {
+        let layout = DistributionLayout.derive(
+            declared: ["Umbrella", "Empty"],
+            dependencies: ["Umbrella": ["Leaf", "Shared"], "Leaf": ["Shared"], "Shared": [], "Empty": []],
+            podsWithBinary: ["Leaf", "Shared"],
+            unified: [:]
+        )
+        // Umbrella has no binary of its own, so it is never a target; Leaf becomes the product.
+        #expect(layout.products.map(\.name) == ["Leaf"])
+        #expect(layout.products.first?.targets == ["Leaf", "Common"])
+        #expect(layout.commonTargets == ["Shared"])
+        #expect(layout.warnings.count == 2)
+        #expect(layout.warnings.contains { $0.contains("Umbrella") && $0.contains("Shared") })
+        #expect(layout.warnings.contains { $0.contains("Empty") })
+    }
+
+    @Test func unifiedPodsAreNeverBinaryTargetsOrProducts() {
+        let url = "https://example.com/unified.git"
+        let layout = DistributionLayout.derive(
+            declared: ["Umbrella/Sub", "Real"],
+            dependencies: ["Umbrella/Sub": ["Unified"], "Real": ["Unified"], "Unified": []],
+            podsWithBinary: ["Real", "Unified"],
+            unified: ["Unified": url]
+        )
+        #expect(layout.products.map(\.name) == ["Real"])
+        #expect(layout.products.first?.targets == ["Real", "Common"])
+        #expect(layout.commonTargets.isEmpty)
+        #expect(layout.binaryTargets == ["Real"])
+        #expect(layout.unifiedPackageURLs == [url])
+        #expect(layout.warnings.count == 1)
+    }
+
+    @Test func singleProductPutsTheRestOfItsClosureInCommon() {
+        let layout = DistributionLayout.derive(
+            declared: ["Main"],
+            dependencies: ["Main": ["Base", "Extra"], "Base": [], "Extra": []],
+            podsWithBinary: ["Main", "Base", "Extra"],
+            unified: [:]
+        )
+        #expect(layout.commonTargets == ["Base", "Extra"])
+        #expect(layout.products.first?.targets == ["Main", "Common"])
+    }
+
+    @Test func nestedProductStaysATargetOfTheProductThatDependsOnIt() {
+        let layout = DistributionLayout.derive(
+            declared: ["A", "B"],
+            dependencies: ["A": ["Base"], "B": ["A", "Base", "Own"], "Base": [], "Own": []],
+            podsWithBinary: ["A", "B", "Base", "Own"],
+            unified: [:]
+        )
+        #expect(layout.commonTargets == ["Base"])
+        #expect(layout.products.map(\.targets) == [["A", "Common"], ["B", "A", "Own", "Common"]])
+    }
 }
