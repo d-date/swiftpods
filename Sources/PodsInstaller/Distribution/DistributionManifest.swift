@@ -81,7 +81,7 @@ struct DistributionManifest {
         switch requirement {
         case .exact(let version): "exact: \(literal(version.description))"
         case .closedRange(let lower, let upper): "\(literal(lower.description))...\(literal(upper.description))"
-        case .unsafe(let lower, let upper, _): "\(literal(lower.description))..<\(literal(upper.description))"
+        case .range(let lower, let upper), .unsafe(let lower, let upper, _): "\(literal(lower.description))..<\(literal(upper.description))"
         }
     }
 

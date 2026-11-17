@@ -135,6 +135,14 @@ let package = Package(
         if let first, let second { #expect(first.lowerBound < second.lowerBound) }
     }
 
+    @Test func rendersHalfOpenRange() {
+        let dependency = DistributionManifest.Dependency(
+            url: "https://github.com/a/first.git", requirement: .range(Version(1, 2, 0), Version(2, 0, 0)), products: ["First"])
+        let manifest = Self.render(dependencies: [dependency])
+        #expect(manifest.contains(#"    .package(url: "https://github.com/a/first.git", "1.2.0"..<"2.0.0"),"#))
+        #expect(!manifest.contains("#warning("))
+    }
+
     @Test func commonExportsSorted() {
         let layout = DistributionLayout(products: [], commonTargets: ["Zeta", "Alpha"], binaryTargets: [], unifiedPackageURLs: [], warnings: [])
         #expect(DistributionManifest.renderCommonExports(layout: layout) == "@_exported import Alpha\n@_exported import Zeta\n")

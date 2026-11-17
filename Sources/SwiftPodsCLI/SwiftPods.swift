@@ -16,7 +16,7 @@ struct SwiftPods: AsyncParsableCommand {
         abstract: "A CocoaPods-compatible dependency manager written in Swift.",
         version: version,
         subcommands: [
-            Install.self, Update.self, Outdated.self, Deintegrate.self, Init.self,
+            Install.self, Update.self, Outdated.self, Deintegrate.self, Init.self, Package.self,
             SpecCommand.self, RepoCommand.self, CacheCommand.self,
         ],
         defaultSubcommand: Install.self
@@ -143,6 +143,30 @@ struct Init: AsyncParsableCommand {
         try await PodsCLI.run(options.ui) {
             let url = try PodfileTemplate.create(in: options.directory, swift: format == .swift)
             options.ui.message("Created \(url.lastPathComponent)", style: .success)
+        }
+    }
+}
+
+struct Package: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(abstract: "Build the pods into xcframeworks and generate the distribution Package.swift.")
+
+    @OptionGroup var options: ProjectOptions
+
+    @Option(name: .customLong("version"), help: "The distribution version, used in the binary target URLs.")
+    var version: String
+
+    @Option(help: "Where to write the zips and a copy of Package.swift (default: build/distribution next to the Podfile).")
+    var output: String?
+
+    @Flag(name: .long, help: "Don't check that every product links on its own.")
+    var skipVerification = false
+
+    func run() async throws {
+        try await PodsCLI.run(options.ui) {
+            let outputDirectory = output.map { URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL }
+            try await DistributionBuilder(context: options.context(), options: DistributionOptions(
+                version: version, outputDirectory: outputDirectory, verify: !skipVerification
+            )).build()
         }
     }
 }

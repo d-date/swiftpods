@@ -19,6 +19,11 @@ public struct Installer: Sendable {
 
     @discardableResult
     public func install() async throws -> InstallationPlan {
+        try await installReturningAnalysis().plan
+    }
+
+    /// `install()`, also returning the analysis (with the pods at their installed locations).
+    func installReturningAnalysis() async throws -> (plan: InstallationPlan, analysis: Analysis) {
         let ui = context.ui
         let analysis = try await Analyzer(context: context, options: options).analyze()
         let sandbox = context.sandbox
@@ -58,7 +63,7 @@ public struct Installer: Sendable {
 
         let direct = plan.podfile.allDependencies.count
         ui.message("Pod installation complete! There \(direct == 1 ? "is" : "are") \(direct) dependenc\(direct == 1 ? "y" : "ies") from the Podfile and \(pods.count) total pod\(pods.count == 1 ? "" : "s") installed.", style: .success)
-        return plan
+        return (plan, installedAnalysis)
     }
 
     /// Pins the package references of `Pods.xcodeproj` to the versions of the final resolution, where Xcode looks for them.

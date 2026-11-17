@@ -4,6 +4,8 @@ import PodsCore
 enum DistributionRequirement: Equatable, Sendable {
     case exact(Version)
     case closedRange(Version, Version)
+    /// `lower..<upper`: the declared range of a package that no pod is unified with.
+    case range(Version, Version)
     /// Declared range of an overridden package, rendered as written, plus the `#warning` text.
     case unsafe(lower: Version, upper: Version, warning: String)
 

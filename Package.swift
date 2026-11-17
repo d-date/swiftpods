@@ -73,6 +73,7 @@ let package = Package(
             ]
         ),
         .testTarget(name: "PodsCoreTests", dependencies: ["PodsCore"]),
+        .testTarget(name: "SwiftPodsCLITests", dependencies: ["SwiftPodsCLI", .product(name: "ArgumentParser", package: "swift-argument-parser")]),
         .testTarget(name: "PodsDSLTests", dependencies: ["PodsDSL"]),
         .testTarget(name: "PodsSpecTests", dependencies: ["PodsSpec"], resources: [.copy("Fixtures")]),
         .testTarget(name: "PodsPodfileTests", dependencies: ["PodsPodfile", "PodsManifest"]),
