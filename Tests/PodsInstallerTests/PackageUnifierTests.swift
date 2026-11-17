@@ -35,6 +35,7 @@ struct PackageUnifierTests {
                 allowedCommits: ["c1", "c2"],
                 taggedVersions: [Version(3, 3, 2), Version(3, 5, 0), Version(4, 0, 0)],
                 podAcceptedVersions: [Version(3, 3, 2), Version(3, 5, 0)],
+                podfileRequirement: nil,
                 unsafeOverrideReason: nil
             ),
         ])
@@ -229,6 +230,7 @@ struct PackageUnifierTests {
             allowedCommits: ["c0", "c2"],
             taggedVersions: [Version(8, 0, 0), Version(8, 1, 0), Version(8, 2, 0)],
             podAcceptedVersions: [Version(8, 0, 0), Version(8, 2, 0)],
+            podfileRequirement: nil,
             unsafeOverrideReason: nil
         )
         #expect(throws: PodsError.self) {
@@ -247,6 +249,7 @@ struct PackageUnifierTests {
             allowedCommits: ["c0"],
             taggedVersions: [Version(8, 0, 0)],
             podAcceptedVersions: [Version(8, 0, 0)],
+            podfileRequirement: nil,
             unsafeOverrideReason: nil
         )
         // The tag was moved to another commit after the tags were listed.
@@ -301,7 +304,8 @@ struct PackageUnifierTests {
         #expect(PackageUnifier.unsafeOverrideWarning(u, pod: pod, resolved: Version(1, 0, 0)) == nil)
         #expect(PackageUnifier.unsafeOverrideWarning(u, pod: pod, resolved: Version(2, 0, 0)) ==
             "Swift package https://example.com/Lib.git 2.0.0 is outside the versions pod 'Lib' accepts (< 2.0); "
-            + "allowed by an unsafe override in Podfile.swift: r. ABI compatibility is not verified.")
+            + "the declared range >= 1.0.0, < 3.0.0 is allowed by an unsafe override in Podfile.swift: r. "
+            + "ABI compatibility is not verified.")
         // Without an override there is never a warning.
         let strict = try #require(try PackageUnifier.unify(pods: [try gtmPod()], packages: [gtmPackage()]).first)
         #expect(PackageUnifier.unsafeOverrideWarning(strict, pod: try gtmPod(), resolved: Version(4, 0, 0)) == nil)

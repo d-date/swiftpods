@@ -52,6 +52,8 @@ struct PackageUnifier {
         let taggedVersions: [Version]
         /// Ascending: versions tagged at the commit of a pod version that satisfies the pod requirements and the Podfile requirement.
         let podAcceptedVersions: [Version]
+        /// The range Podfile.swift declares for the package; nil for packages that are only indirect.
+        let podfileRequirement: Requirement?
         let unsafeOverrideReason: String?
     }
 
@@ -116,6 +118,7 @@ struct PackageUnifier {
                 allowedCommits: Set(allowed.compactMap { package.commits[$0] }),
                 taggedVersions: tagged,
                 podAcceptedVersions: podAccepted,
+                podfileRequirement: package.podfileRequirement,
                 unsafeOverrideReason: package.unsafeOverrideReason
             ))
         }
@@ -142,10 +145,12 @@ struct PackageUnifier {
 
     /// The warning for a version that only an unsafe override allows; nil when the pod accepts `resolved` or there is no override.
     static func unsafeOverrideWarning(_ unification: Unification, pod: PodCandidate, resolved: Version) -> String? {
-        guard let reason = unification.unsafeOverrideReason, !unification.podAcceptedVersions.contains(resolved) else { return nil }
+        guard let reason = unification.unsafeOverrideReason, let declared = unification.podfileRequirement,
+              !unification.podAcceptedVersions.contains(resolved) else { return nil }
         let requirements = pod.requirements.map(\.requirement.description).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
         return "Swift package \(unification.packageURL) \(resolved) is outside the versions pod '\(pod.root)' accepts "
-            + "(\(requirements.joined(separator: "; "))); allowed by an unsafe override in Podfile.swift: \(reason). "
+            + "(\(requirements.joined(separator: "; "))); the declared range \(declared) is allowed by an unsafe override in "
+            + "Podfile.swift: \(reason). "
             + "ABI compatibility is not verified."
     }
 

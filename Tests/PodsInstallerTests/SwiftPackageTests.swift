@@ -496,6 +496,7 @@ struct SwiftPackageTests {
         #expect(warning.contains(fixture.libURL))
         #expect(warning.contains("2.0.0"))
         #expect(warning.contains("checked"))
+        #expect(warning.contains(">= 1.0.0, < 3.0.0"))
         #expect(warning.contains("ABI compatibility is not verified"))
     }
 
