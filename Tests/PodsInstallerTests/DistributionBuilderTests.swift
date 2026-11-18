@@ -291,6 +291,16 @@ struct DistributionBuilderTests {
         #expect(ProductLinkVerifier.failureSummary("note: x\nerror: no such module") == "error: no such module")
     }
 
+    /// A log without undefined symbols or `error:` lines still explains the failure: its last 30 lines.
+    @Test func failureSummariesFallBackToLogTail() {
+        let log = (1...40).map { "line \($0)" }.joined(separator: "\n")
+        let tail = (11...40).map { "line \($0)" }.joined(separator: "\n")
+
+        #expect(ProductLinkVerifier.failureSummary(log) == tail)
+        #expect(DistributionBuilder.buildFailureSummary(log) == tail)
+        #expect(DistributionBuilder.buildFailureSummary("CompileC x\nfoo.m:1:1: error: bad\n** BUILD FAILED **") == "foo.m:1:1: error: bad")
+    }
+
     /// Runs install, xcodebuild and xcframework assembly end to end. Slow, so opt-in: `SWIFTPODS_XCODEBUILD=1 swift test`.
     @Test(.enabled(if: ProcessInfo.processInfo.environment["SWIFTPODS_XCODEBUILD"] == "1"))
     func buildsFixtureDistribution() async throws {

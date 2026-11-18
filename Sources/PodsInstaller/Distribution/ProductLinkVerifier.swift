@@ -105,14 +105,22 @@ struct ProductLinkVerifier {
         return directory
     }
 
-    /// The first block of undefined symbols in an xcodebuild log, or its `error:` lines when there is none.
+    /// The first block of undefined symbols in an xcodebuild log, or its `error:` lines when there is none, or its
+    /// last 30 lines when there are none either.
     static func failureSummary(_ log: String) -> String {
         let lines = log.split(separator: "\n", omittingEmptySubsequences: false)
         if let start = lines.firstIndex(where: { $0.hasPrefix("Undefined symbols") }) {
             let block = lines[start...].prefix { !$0.hasPrefix("ld: ") }
             return block.prefix(20).joined(separator: "\n")
         }
-        return lines.filter { $0.contains("error:") }.suffix(20).joined(separator: "\n")
+        return errorLines(of: log)
+    }
+
+    /// The last 20 `error:` lines of an xcodebuild log, or its last 30 lines when it has none.
+    static func errorLines(of log: String) -> String {
+        let lines = log.split(separator: "\n", omittingEmptySubsequences: false)
+        let errors = lines.filter { $0.contains("error:") }
+        return (errors.isEmpty ? lines.suffix(30) : errors.suffix(20)).joined(separator: "\n")
     }
 
     /// A Swift string literal for a product name.

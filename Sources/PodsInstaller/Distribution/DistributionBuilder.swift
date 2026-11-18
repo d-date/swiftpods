@@ -245,9 +245,13 @@ public struct DistributionBuilder: Sendable {
         let result = try await context.shell.execute(command)
         guard result.status == 0 else {
             // xcodebuild prints compiler errors to stdout; its stderr mostly holds the final summary.
-            let errors = (result.stdout + "\n" + result.stderr).split(separator: "\n").filter { $0.contains("error:") }
-            throw PodsError("Building Pods.xcodeproj for \(sdk.rawValue) failed:\n" + errors.suffix(20).joined(separator: "\n"))
+            throw PodsError("Building Pods.xcodeproj for \(sdk.rawValue) failed:\n" + Self.buildFailureSummary(result.stdout + "\n" + result.stderr))
         }
+    }
+
+    /// The `error:` lines of an xcodebuild log, or its last lines when it has none.
+    static func buildFailureSummary(_ log: String) -> String {
+        ProductLinkVerifier.errorLines(of: log)
     }
 
     private func assemble(_ target: PodTarget, assembler: XCFrameworkAssembler, platform: Platform, symroot: URL, output: URL) async throws -> URL {
