@@ -163,13 +163,14 @@ struct TargetBuilder {
         }
     }
 
-    /// Library products of the packages that replace the pods among `roots`, ordered by pod.
+    /// The products of the packages that replace the pods among `roots` (those holding the code of the pods' activated
+    /// specs), ordered by pod.
     private func packageProducts(replacing roots: Set<String>) throws -> [PackageProductRef] {
         var result: [PackageProductRef] = []
         for unification in analysis.unifications where roots.contains(unification.podRoot) {
-            let products = analysis.swiftPackages?.libraryProducts[try packageIdentity(of: unification.packageURL)] ?? []
+            let products = analysis.unifiedProducts[unification.podRoot] ?? []
             guard !products.isEmpty else {
-                throw PodsError("Swift package \(unification.packageURL), which replaces pod `\(unification.podRoot)`, has no library products.")
+                throw PodsError("No library product of Swift package \(unification.packageURL) holds the code of pod `\(unification.podRoot)`.")
             }
             for product in products {
                 let reference = PackageProductRef(packageURL: unification.packageURL, product: product)

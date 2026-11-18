@@ -86,8 +86,11 @@ SwiftPods extension, only in `Podfile.swift` (and `Podfile.json` with `swift_pac
 * Declared packages are resolved with `swift package resolve` in a scratch package.
 * A pod is unified with a resolved package (declared or indirect) when one of its version tags
   points at the same git commit as one of the package's tags, or when both use the same repository.
-  The pod is then not built: every library product of the package replaces it (all of them are
-  linked, even those the pod's code does not use).
+  The pod is then not built: the library products of the package that hold its code replace it. They are
+  found by evaluating the `source_files` of the pod's activated specs in the package checkout and taking,
+  for each package target holding some of those files, the smallest library product listing that target
+  (so `GTMSessionFetcher/Core` gives `GTMSessionFetcherCore`, not `GTMSessionFetcher`). A spec whose
+  sources are in no target, or a target in no product, is an error.
 * A package tag is only a version when it has at most three release components (after an optional
   leading `v`), as in SwiftPM.
 * Not supported yet, and reported as errors: several pods that are the same package (a monorepo

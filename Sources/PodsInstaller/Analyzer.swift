@@ -74,6 +74,8 @@ struct Analysis: Sendable {
     let targetPlatforms: [String: Platform]
     /// Pods replaced by SwiftPM packages; they are not in `pods`.
     let unifications: [PackageUnifier.Unification]
+    /// Unified pod root → the library products of its package that hold the code of its activated specs.
+    let unifiedProducts: [String: [String]]
     /// `nil` when the Podfile declares no SwiftPM packages.
     let swiftPackages: SwiftPackageResolver.Result?
 }
@@ -95,6 +97,7 @@ struct Analyzer {
         let pods: [ResolvedPod]
         let downloader: Downloader
         let unifications: [PackageUnifier.Unification]
+        let unifiedProducts: [String: [String]]
         let swiftPackages: SwiftPackageResolver.Result?
     }
 
@@ -132,7 +135,7 @@ struct Analyzer {
         return Analysis(podfile: resolution.podfile, lockfile: resolution.lockfile, pods: pods,
                         userProjects: resolution.userProjects, targetProjects: resolution.targetProjects,
                         targetPlatforms: resolution.targetPlatforms, unifications: resolution.unifications,
-                        swiftPackages: resolution.swiftPackages)
+                        unifiedProducts: resolution.unifiedProducts, swiftPackages: resolution.swiftPackages)
     }
 
     /// Pods reachable from the Podfile without going through a pod replaced by a SwiftPM package;
@@ -226,15 +229,17 @@ struct Analyzer {
                 .resolve(roots)
         }
         var unifications: [PackageUnifier.Unification] = []
+        var unifiedProducts: [String: [String]] = [:]
         var swiftPackages: SwiftPackageResolver.Result?
         if !podfile.swiftPackages.isEmpty {
-            (unifications, swiftPackages) = try await ui.section("Resolving Swift packages") {
+            (unifications, unifiedProducts, swiftPackages) = try await ui.section("Resolving Swift packages") {
                 try await resolveSwiftPackages(podfile: podfile, lockfile: lockfile, pods: resolved, externals: externals, platforms: platforms,
                                                sources: sources)
             }
         }
         return Resolution(podfile: podfile, lockfile: lockfile, userProjects: userProjects, targetProjects: targetProjects, targetPlatforms: platforms,
-                          externals: externals, pods: resolved, downloader: downloader, unifications: unifications, swiftPackages: swiftPackages)
+                          externals: externals, pods: resolved, downloader: downloader, unifications: unifications,
+                          unifiedProducts: unifiedProducts, swiftPackages: swiftPackages)
     }
 
     // MARK: - Swift packages
@@ -242,11 +247,12 @@ struct Analyzer {
     private typealias PackageRequirement = (url: String, lowerBound: Version?, upperBound: Version?, requirement: Requirement?)
 
     /// Resolves the declared packages, finds the pods that are the same library as a resolved package,
-    /// and resolves again with those packages narrowed to the versions the pods accept.
+    /// and resolves again with those packages narrowed to the versions the pods accept. Also returns, for each
+    /// unified pod, the package products that hold its code.
     private func resolveSwiftPackages(
         podfile: Podfile, lockfile: Lockfile?, pods: [ResolvedPod], externals: [String: FetchedExternal], platforms: [String: Platform],
         sources: SourcesManager
-    ) async throws -> ([PackageUnifier.Unification], SwiftPackageResolver.Result) {
+    ) async throws -> ([PackageUnifier.Unification], [String: [String]], SwiftPackageResolver.Result) {
         let pathHash = Insecure.SHA1.hash(data: Data(context.podfileURL.standardizedFileURL.path.utf8)).map { String(format: "%02x", $0) }.joined()
         let resolver = SwiftPackageResolver(
             workDirectory: context.cacheRoot.appendingPathComponent("SwiftPackages").appendingPathComponent(pathHash), shell: context.shell
@@ -292,8 +298,8 @@ struct Analyzer {
         let unifications = try PackageUnifier.unify(pods: candidates, packages: packages)
         guard !unifications.isEmpty else {
             // The first resolution is final.
-            return ([], SwiftPackageResolver.Result(pins: first.pins, libraryProducts: try await resolver.libraryProducts(),
-                                                    resolvedFile: first.resolvedFile))
+            return ([], [:], SwiftPackageResolver.Result(pins: first.pins, packages: try await resolver.packageContents(),
+                                                         resolvedFile: first.resolvedFile))
         }
 
         let identities = Dictionary(packages.map { ($0.url, $0.identity) }, uniquingKeysWith: { a, _ in a })
@@ -320,7 +326,31 @@ struct Analyzer {
                 context.ui.warn(warning)
             }
         }
-        return (unifications, second)
+        return (unifications, try Self.unifiedProducts(unifications, pods: pods, identities: identities, resolved: second, platforms: platforms), second)
+    }
+
+    /// Unified pod root → the products of its package that hold the code of the pod's activated specs. The pod's source
+    /// patterns are evaluated in the package checkout, which is at the commit of the pod version except with an unsafe
+    /// override that resolved outside the versions the pod accepts.
+    private static func unifiedProducts(
+        _ unifications: [PackageUnifier.Unification], pods: [ResolvedPod], identities: [String: String],
+        resolved: SwiftPackageResolver.Result, platforms: [String: Platform]
+    ) throws -> [String: [String]] {
+        let platformNames = Set(platforms.values.map(\.name)).sorted()
+        var result: [String: [String]] = [:]
+        for unification in unifications {
+            guard let pod = pods.first(where: { $0.name == unification.podRoot }),
+                  let identity = identities[unification.packageURL], let package = resolved.packages[identity] else {
+                throw PodsError("Swift package \(unification.packageURL), which replaces pod `\(unification.podRoot)`, was not checked out.")
+            }
+            let specs = pod.activatedSpecs.compactMap { pod.spec.subspec(named: $0) }
+            let products = try PackageProductSelector.select(
+                podRoot: pod.name, specs: specs.isEmpty ? [pod.spec] : specs,
+                platforms: platformNames.filter { name in pod.spec.availablePlatforms.contains { $0.name == name } },
+                package: package, packageURL: unification.packageURL)
+            result[pod.name] = products
+        }
+        return result
     }
 
     /// The pins the resolutions start from: the `SWIFT PACKAGES` of Podfile.lock, which is shared, or, without a lockfile, those

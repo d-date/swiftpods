@@ -12,10 +12,13 @@ struct SwiftPackageResolver {
 
     struct Result: Sendable {
         let pins: [Pin]
-        /// identity → names of the package's library products.
-        let libraryProducts: [String: [String]]
+        /// identity → the package's checkout, targets and library products.
+        let packages: [String: PackageContents]
         /// Raw `Package.resolved` contents.
         let resolvedFile: Data
+
+        /// identity → names of the package's library products.
+        var libraryProducts: [String: [String]] { packages.mapValues { $0.libraryProducts.map(\.name) } }
     }
 
     let workDirectory: URL
@@ -28,7 +31,7 @@ struct SwiftPackageResolver {
 
     /// `requirements` maps a package URL to its range. `previousResolved` is copied in first so pins are kept,
     /// except for the packages whose identities are in `updating`, which move to their newest versions.
-    /// With `readingProducts: false`, `libraryProducts` is left empty (for a resolution that is not final).
+    /// With `readingProducts: false`, `packages` is left empty (for a resolution that is not final).
     func resolve(_ requirements: [(url: String, lowerBound: Version?, upperBound: Version?, requirement: Requirement?)],
                  previousResolved: Data?, updating: [String] = [], readingProducts: Bool = true) async throws -> Result {
         let fileManager = FileManager.default
@@ -76,7 +79,7 @@ struct SwiftPackageResolver {
         // SwiftPM writes no `Package.resolved` when there is nothing to pin.
         let resolvedFile = fileManager.fileExists(atPath: resolvedURL.path) ? try Data(contentsOf: resolvedURL) : Data()
         let pins = resolvedFile.isEmpty ? [] : try Self.pins(fromResolved: resolvedFile)
-        return Result(pins: pins, libraryProducts: readingProducts ? try await libraryProducts() : [:], resolvedFile: resolvedFile)
+        return Result(pins: pins, packages: readingProducts ? try await packageContents() : [:], resolvedFile: resolvedFile)
     }
 
     /// Reads the pins of a `Package.resolved` file (format version 2 or 3).
@@ -115,8 +118,8 @@ struct SwiftPackageResolver {
         return Data((json.serialized() + "\n").utf8)
     }
 
-    /// Library products of every package of the last resolution, read from each checkout's manifest.
-    func libraryProducts() async throws -> [String: [String]] {
+    /// Checkout, targets and library products of every package of the last resolution, read from each checkout's manifest.
+    func packageContents() async throws -> [String: PackageContents] {
         let output = try await shell.run("swift", ["package", "show-dependencies", "--format", "json"], in: workDirectory)
         var checkouts: [String: String] = [:]
         func collect(_ node: JSON) {
@@ -131,18 +134,15 @@ struct SwiftPackageResolver {
 
         let shell = shell
         let workDirectory = workDirectory
-        return try await withThrowingTaskGroup(of: (String, [String]).self) { group in
+        return try await withThrowingTaskGroup(of: (String, PackageContents).self) { group in
             for (identity, path) in checkouts {
                 group.addTask {
                     let dump = try await shell.run("swift", ["package", "dump-package", "--package-path", path], in: workDirectory)
-                    let products = try JSON(parsing: dump.stdout)["products"]?.array ?? []
-                    return (identity, products.compactMap { product in
-                        product["type"]?["library"] == nil ? nil : product["name"]?.string
-                    })
+                    return (identity, PackageContents(dump: try JSON(parsing: dump.stdout), checkout: URL(fileURLWithPath: path)))
                 }
             }
-            var result: [String: [String]] = [:]
-            for try await (identity, names) in group { result[identity] = names }
+            var result: [String: PackageContents] = [:]
+            for try await (identity, contents) in group { result[identity] = contents }
             return result
         }
     }

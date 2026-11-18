@@ -28,6 +28,11 @@ struct MLKitDistributionTests {
         "MLKitTranslate": ["MLKitXenoCommon"],
         "MLKitSmartReply": ["MLKitXenoCommon"],
     ]
+    /// The products of the unified packages that hold the code of the pod subspecs ML Kit 9.0 activates
+    /// (GoogleUtilities Environment/Logger/UserDefaults, GTMSessionFetcher/Core, PromisesObjC, nanopb, GoogleDataTransport).
+    static let expectedCommonProducts: Set<String> = [
+        "GULEnvironment", "GULLogger", "GULUserDefaults", "GTMSessionFetcherCore", "FBLPromises", "nanopb", "GoogleDataTransport",
+    ]
 
     let root: URL
     let cache: URL
@@ -102,7 +107,9 @@ struct MLKitDistributionTests {
         #expect(Set(generated.products.map(\.name)) == Set(reference.products.map(\.name)))
         #expect(Set(generated.binaryTargets.keys) == Set(reference.binaryTargets.keys))
         #expect(Set(generated.binaryTargets.values) == Set(reference.binaryTargets.values), "release asset URLs")
+        #expect(!reference.commonMembers.isEmpty)
         #expect(generated.commonMembers == reference.commonMembers)
+        #expect(generated.commonProducts == Self.expectedCommonProducts)
 
         let common = generated.commonMembers.union(reference.commonMembers)
         for product in reference.products {
@@ -127,6 +134,8 @@ struct MLKitDistributionTests {
         let binaryTargets: [String: String]
         /// The binary targets `Common` depends on (not the Swift package products).
         let commonMembers: Set<String>
+        /// The Swift package products `Common` depends on.
+        let commonProducts: Set<String>
 
         init(_ text: String) throws {
             products = text.matches(of: #/\.library\(\s*name: "([^"]+)",\s*targets: \[([^\]]*)\]\)/#).map { match in
@@ -137,6 +146,7 @@ struct MLKitDistributionTests {
             })
             let common = try #require(text.firstMatch(of: #/name: "Common",\s*dependencies: \[([^\]]*)\]/#))
             commonMembers = Set(common.1.matches(of: #/^\s*"([^"]+)",/#.anchorsMatchLineEndings()).map { String($0.1) })
+            commonProducts = Set(common.1.matches(of: #/\.product\(name: "([^"]+)"/#).map { String($0.1) })
         }
     }
 }

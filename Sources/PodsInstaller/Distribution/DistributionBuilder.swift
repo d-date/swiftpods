@@ -105,7 +105,8 @@ public struct DistributionBuilder: Sendable {
         let manifest = DistributionManifest.render(
             settings: settings, version: options.version, platform: platform, layout: layout, checksums: checksums,
             dependencies: try Self.packageDependencies(declared: podfile.swiftPackages, unifications: analysis.unifications,
-                                                       resolved: analysis.swiftPackages)
+                                                       unifiedProducts: analysis.unifiedProducts, targetProducts: target.packageProducts,
+                                                       resolved: analysis.swiftPackages, warn: ui.warn)
         )
         let sourcePods = Set(plan.podTargets.filter(\.shouldBuild).map(\.podName))
         let commonExports = DistributionManifest.renderCommonExports(layout: layout, libraries: sourcePods)
@@ -126,12 +127,25 @@ public struct DistributionBuilder: Sendable {
         return output
     }
 
-    /// The requirements `Common`'s packages get: every package a pod is unified with, narrowed to what the pods
-    /// accept, and every other declared package with its declared range. Sorted by URL.
+    /// The packages `Common` depends on, sorted by URL: every package a pod is unified with, narrowed to what the pods
+    /// accept, and every other declared package the distribution target uses a product of, with its declared range.
+    /// A package gets exactly the products the target declares for it (`.product(name:package:)`); otherwise a unified
+    /// package gets those holding the code of its pod (`unifiedProducts`).
+    /// - Parameter warn: told when the products of a package were chosen from a checkout that is not at a commit of its pod.
     static func packageDependencies(declared: [SwiftPackageDependency], unifications: [PackageUnifier.Unification],
-                                    resolved: SwiftPackageResolver.Result?) throws -> [DistributionManifest.Dependency] {
+                                    unifiedProducts: [String: [String]], targetProducts: [PackageProductDependency],
+                                    resolved: SwiftPackageResolver.Result?, warn: (String) -> Void = { _ in }) throws -> [DistributionManifest.Dependency] {
         guard !declared.isEmpty || !unifications.isEmpty else { return [] }
         guard let resolved else { throw PodsError("The Swift packages of Podfile.swift were not resolved.") }
+        var explicit: [String: [String]] = [:]
+        for product in targetProducts {
+            guard declared.contains(where: { $0.identity == product.package.lowercased() }) else {
+                throw PodsError("The distribution target uses product `\(product.name)` of undeclared Swift package `\(product.package)`.")
+            }
+            if !explicit[product.package.lowercased(), default: []].contains(product.name) {
+                explicit[product.package.lowercased(), default: []].append(product.name)
+            }
+        }
         var dependencies: [DistributionManifest.Dependency] = []
         for unification in unifications {
             let packageIdentity = identity(of: unification.packageURL)
@@ -139,14 +153,25 @@ public struct DistributionBuilder: Sendable {
                 throw PodsError("Swift package \(unification.packageURL) has no resolved version.")
             }
             let requirement = try DistributionRequirement.forUnification(unification, pinned: pin.version, declared: unification.podfileRequirement)
-            dependencies.append(.init(url: unification.packageURL, requirement: requirement, products: resolved.libraryProducts[packageIdentity] ?? []))
+            var products = explicit[packageIdentity] ?? []
+            if products.isEmpty {
+                products = unifiedProducts[unification.podRoot] ?? []
+                guard !products.isEmpty else {
+                    throw PodsError("No library product of Swift package \(unification.packageURL) holds the code of pod `\(unification.podRoot)`.")
+                }
+                if unification.unsafeOverrideReason != nil, !unification.podAcceptedVersions.contains(pin.version) {
+                    warn("The products of Swift package \(unification.packageURL) (\(products.joined(separator: ", "))) were chosen from the "
+                        + "source files of pod `\(unification.podRoot)` in the package at \(pin.version), which no version of the pod is "
+                        + "built from (unsafe override). Check them, or declare them with `.product(name:package:)` in the target.")
+                }
+            }
+            dependencies.append(.init(url: unification.packageURL, requirement: requirement, products: products))
         }
         for package in declared {
             let unified = dependencies.contains { identity(of: $0.url) == package.identity }
-            guard !unified else { continue }
+            guard !unified, let products = explicit[package.identity] else { continue }
             let range = try SwiftPackageResolver.range(of: package.requirement, url: package.url)
-            dependencies.append(.init(url: package.url, requirement: .range(range.lower, range.upper),
-                                      products: resolved.libraryProducts[package.identity] ?? []))
+            dependencies.append(.init(url: package.url, requirement: .range(range.lower, range.upper), products: products))
         }
         return dependencies.sorted { $0.url < $1.url }
     }

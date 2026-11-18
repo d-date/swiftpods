@@ -41,7 +41,7 @@ public struct Installer: Sendable {
         let installedAnalysis = Analysis(podfile: analysis.podfile, lockfile: analysis.lockfile, pods: pods,
                                          userProjects: analysis.userProjects, targetProjects: analysis.targetProjects,
                                          targetPlatforms: analysis.targetPlatforms, unifications: analysis.unifications,
-                                         swiftPackages: analysis.swiftPackages)
+                                         unifiedProducts: analysis.unifiedProducts, swiftPackages: analysis.swiftPackages)
 
         let plan = try TargetBuilder(analysis: installedAnalysis, podfileURL: context.podfileURL, projectDirectory: context.projectDirectory).build()
         let lockfile = makeLockfile(plan: plan, previous: analysis.lockfile, swiftPackages: analysis.swiftPackages, unifications: analysis.unifications)

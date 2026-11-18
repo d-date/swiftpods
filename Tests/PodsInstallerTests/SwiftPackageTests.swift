@@ -11,7 +11,7 @@ import XcodeProj
 struct SwiftPackageFixture {
     static let shell = Shell(environment: ["GIT_CONFIG_GLOBAL": "/dev/null", "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"])
 
-    /// `file://` URL of `Lib` (pod `Lib` and package `lib`, product `LibCore`).
+    /// `file://` URL of `Lib` (pod `Lib` and package `lib`, product `LibCore`, plus `LibTestHelpers`, which the pod does not build).
     let libURL: String
     /// `file://` URL of `Wrapper`, a package depending on `Lib` `from: "1.0.0"`.
     let wrapperURL: String
@@ -27,8 +27,11 @@ struct SwiftPackageFixture {
 
         let package = Package(
             name: "Lib",
-            products: [.library(name: "LibCore", targets: ["LibCore"])],
-            targets: [.target(name: "LibCore", path: ".", sources: ["Sources/LibCore"], publicHeadersPath: "include")]
+            products: [.library(name: "LibCore", targets: ["LibCore"]), .library(name: "LibTestHelpers", targets: ["LibTestHelpers"])],
+            targets: [
+                .target(name: "LibCore", path: ".", sources: ["Sources/LibCore"], publicHeadersPath: "include"),
+                .target(name: "LibTestHelpers", dependencies: ["LibCore"], path: "Helpers"),
+            ]
         )
         """, to: lib.appendingPathComponent("Package.swift"))
         try write("""
@@ -41,6 +44,8 @@ struct SwiftPackageFixture {
         """, to: lib.appendingPathComponent("Lib.podspec"))
         try write("#import \"Lib.h\"\n\nint LibValue(void) { return 1; }\n", to: lib.appendingPathComponent("Sources/LibCore/Lib.m"))
         try write("int LibValue(void);\n", to: lib.appendingPathComponent("include/Lib.h"))
+        try write("int LibHelperValue(void) { return 3; }\n", to: lib.appendingPathComponent("Helpers/LibTestHelpers.c"))
+        try write("int LibHelperValue(void);\n", to: lib.appendingPathComponent("Helpers/include/LibTestHelpers.h"))
         try await git(lib, "init", "--quiet", "-b", "main")
         try await commit(lib, tags: ["1.0.0", "CocoaPods-1.0.0"])
         try write("int LibValue(void);\nint LibValue2(void);\n", to: lib.appendingPathComponent("include/Lib.h"))
@@ -159,7 +164,9 @@ struct SwiftPackageTests {
         let packages = try #require(analysis.swiftPackages)
         let pin = try #require(packages.pins.first { $0.identity == "lib" })
         #expect(pin.version == Version(1, 0, 0))
-        #expect(packages.libraryProducts["lib"] == ["LibCore"])
+        #expect(packages.libraryProducts["lib"] == ["LibCore", "LibTestHelpers"])
+        // Only the product holding the pod's sources replaces it.
+        #expect(analysis.unifiedProducts == ["Lib": ["LibCore"]])
         #expect(!packages.resolvedFile.isEmpty)
 
         // The whole install goes through even though `Binary` depends on the unified pod.

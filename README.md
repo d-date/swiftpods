@@ -207,7 +207,9 @@ swiftpods package --version 9.0.3
   `MLKitBarcodeScanning`), listing the binary targets of that pod's transitive closure. Binary targets
   every product needs go into a `Common` source target (`@_exported import` of each prebuilt framework; source pods become
   library xcframeworks without a module map and are only linked), together with the
-  library products of the Swift packages the pods are unified with.
+  products of the Swift packages the pods are unified with that hold the code of the activated subspecs
+  (the products named with `.product(name:package:)` in the target instead, when there are any for that
+  package; products of other declared packages only when named that way).
 * **Dependency ranges**: a package a pod is unified with is narrowed to the versions the pods accept: the
   longest run of consecutive tagged versions, all accepted, around the resolved one (`"lo"..."hi"`, or
   `exact:` for a single version). New upstream releases come in with the next `swiftpods package`.

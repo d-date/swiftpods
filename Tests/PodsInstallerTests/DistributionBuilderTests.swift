@@ -4,6 +4,7 @@ import PodsCore
 @testable import PodsInstaller
 import PodsPodfile
 import PodsSources
+import Synchronization
 import Testing
 
 @Suite(.serialized)
@@ -120,33 +121,100 @@ struct DistributionBuilderTests {
         try write(#"{"name":"Prebuilt","version":"2.0.0","vendored_frameworks":"Prebuilt.framework"}"#, "LocalPods/Prebuilt/Prebuilt.podspec.json")
     }
 
-    @Test func packageDependencies() throws {
-        let libURL = "https://example.com/Lib.git"
-        let toolURL = "https://example.com/Tool.git"
-        func range(_ lower: Version, _ upper: Version) -> Requirement {
-            Requirement(constraints: [.init(.greaterThanOrEqual, lower), .init(.lessThan, upper)])
-        }
-        let unification = PackageUnifier.Unification(
+    static let libURL = "https://example.com/Lib.git"
+    static let toolURL = "https://example.com/Tool.git"
+
+    static func range(_ lower: Version, _ upper: Version) -> Requirement {
+        Requirement(constraints: [.init(.greaterThanOrEqual, lower), .init(.lessThan, upper)])
+    }
+
+    /// Pod `Lib` unified with package `Lib`, which tags 1.0.0 and 1.0.1 at commits of accepted pod versions.
+    static func libUnification(declared: Bool = true, unsafeOverrideReason: String? = nil) -> PackageUnifier.Unification {
+        PackageUnifier.Unification(
             podRoot: "Lib", packageURL: libURL, allowedVersions: [Version(1, 0, 0), Version(1, 0, 1)],
             lowerBound: Version(1, 0, 0), upperBound: Version(1, 0, 2), allowedCommits: [],
             taggedVersions: [Version(0, 9, 0), Version(1, 0, 0), Version(1, 0, 1), Version(1, 1, 0)],
-            podAcceptedVersions: [Version(1, 0, 0), Version(1, 0, 1)], podfileRequirement: range(Version(1, 0, 0), Version(2, 0, 0)),
-            unsafeOverrideReason: nil)
-        let resolved = SwiftPackageResolver.Result(
+            podAcceptedVersions: [Version(1, 0, 0), Version(1, 0, 1)], podfileRequirement: declared ? range(Version(1, 0, 0), Version(2, 0, 0)) : nil,
+            unsafeOverrideReason: unsafeOverrideReason)
+    }
+
+    static func resolved(lib: Version = Version(1, 0, 1)) -> SwiftPackageResolver.Result {
+        SwiftPackageResolver.Result(
             pins: [.init(identity: "tool", url: toolURL, version: Version(1, 5, 0), revision: "b"),
-                   .init(identity: "lib", url: libURL, version: Version(1, 0, 1), revision: "a")],
-            libraryProducts: ["lib": ["LibCore", "LibExtra"], "tool": ["Tool"]], resolvedFile: Data())
+                   .init(identity: "lib", url: libURL, version: lib, revision: "a")],
+            packages: [:], resolvedFile: Data())
+    }
 
+    static let declared = [SwiftPackageDependency(url: toolURL, requirement: range(Version(1, 2, 0), Version(2, 0, 0))),
+                           SwiftPackageDependency(url: libURL, requirement: range(Version(1, 0, 0), Version(2, 0, 0)))]
+
+    @Test func packageDependencies() throws {
         let dependencies = try DistributionBuilder.packageDependencies(
-            declared: [SwiftPackageDependency(url: toolURL, requirement: range(Version(1, 2, 0), Version(2, 0, 0))),
-                       SwiftPackageDependency(url: libURL, requirement: range(Version(1, 0, 0), Version(2, 0, 0)))],
-            unifications: [unification], resolved: resolved)
+            declared: Self.declared, unifications: [Self.libUnification()], unifiedProducts: ["Lib": ["LibCore"]],
+            targetProducts: [PackageProductDependency(name: "Tool", package: "Tool")], resolved: Self.resolved())
 
-        // The unified package is narrowed (once, although it is also declared); the other declared package keeps its range.
+        // The unified package is narrowed (once, although it is also declared) and gets the products holding its pod's
+        // code; the other declared package keeps its range and gets the products the target uses.
         #expect(dependencies == [
-            .init(url: libURL, requirement: .closedRange(Version(1, 0, 0), Version(1, 0, 1)), products: ["LibCore", "LibExtra"]),
-            .init(url: toolURL, requirement: .range(Version(1, 2, 0), Version(2, 0, 0)), products: ["Tool"]),
+            .init(url: Self.libURL, requirement: .closedRange(Version(1, 0, 0), Version(1, 0, 1)), products: ["LibCore"]),
+            .init(url: Self.toolURL, requirement: .range(Version(1, 2, 0), Version(2, 0, 0)), products: ["Tool"]),
         ])
+    }
+
+    /// A declared package no pod is unified with and whose products the target does not use is not a dependency.
+    @Test func leavesOutDeclaredPackagesTheTargetDoesNotUse() throws {
+        let dependencies = try DistributionBuilder.packageDependencies(
+            declared: Self.declared, unifications: [Self.libUnification()], unifiedProducts: ["Lib": ["LibCore"]],
+            targetProducts: [], resolved: Self.resolved())
+
+        #expect(dependencies.map(\.url) == [Self.libURL])
+    }
+
+    /// A package only reached through other packages (not declared) is a dependency when a pod is unified with it.
+    @Test func unifiedIndirectPackage() throws {
+        let dependencies = try DistributionBuilder.packageDependencies(
+            declared: [Self.declared[0]], unifications: [Self.libUnification(declared: false)], unifiedProducts: ["Lib": ["LibCore"]],
+            targetProducts: [], resolved: Self.resolved(lib: Version(1, 0, 0)))
+
+        #expect(dependencies == [.init(url: Self.libURL, requirement: .closedRange(Version(1, 0, 0), Version(1, 0, 1)), products: ["LibCore"])])
+    }
+
+    /// Products the target declares for a package replace the ones chosen from its pod's sources.
+    @Test func targetProductsOverrideChosenProducts() throws {
+        let dependencies = try DistributionBuilder.packageDependencies(
+            declared: Self.declared, unifications: [Self.libUnification()], unifiedProducts: ["Lib": ["LibCore"]],
+            targetProducts: [PackageProductDependency(name: "LibExtra", package: "Lib")], resolved: Self.resolved())
+
+        #expect(dependencies.map(\.products) == [["LibExtra"]])
+    }
+
+    @Test func rejectsTargetProductsOfUndeclaredPackages() {
+        #expect(throws: PodsError.self) {
+            try DistributionBuilder.packageDependencies(
+                declared: Self.declared, unifications: [], unifiedProducts: [:],
+                targetProducts: [PackageProductDependency(name: "Other", package: "Other")], resolved: Self.resolved())
+        }
+    }
+
+    /// With an unsafe override resolved outside the versions the pod accepts, the checkout is not the pod's code, so
+    /// the chosen products come with a warning, unless the target declares them.
+    @Test(arguments: [false, true])
+    func warnsAboutProductsChosenOutsidePodVersions(declaresProducts: Bool) throws {
+        let warnings = Mutex<[String]>([])
+        let dependencies = try DistributionBuilder.packageDependencies(
+            declared: Self.declared, unifications: [Self.libUnification(unsafeOverrideReason: "checked")], unifiedProducts: ["Lib": ["LibCore"]],
+            targetProducts: declaresProducts ? [PackageProductDependency(name: "LibCore", package: "Lib")] : [],
+            resolved: Self.resolved(lib: Version(1, 1, 0)), warn: { warning in warnings.withLock { $0.append(warning) } })
+
+        #expect(dependencies.map(\.products) == [["LibCore"]])
+        let messages = warnings.withLock { $0 }
+        if declaresProducts {
+            #expect(messages.isEmpty)
+        } else {
+            #expect(messages.count == 1)
+            #expect(messages.first?.contains("LibCore") == true)
+            #expect(messages.first?.contains("1.1.0") == true)
+        }
     }
 
     @Test func verificationManifestUsesLocalXCFrameworks() throws {
