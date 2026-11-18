@@ -106,7 +106,8 @@ public struct DistributionBuilder: Sendable {
             settings: settings, version: options.version, platform: platform, layout: layout, checksums: checksums,
             dependencies: try Self.packageDependencies(declared: podfile.swiftPackages, unifications: analysis.unifications,
                                                        unifiedProducts: analysis.unifiedProducts, targetProducts: target.packageProducts,
-                                                       resolved: analysis.swiftPackages, warn: ui.warn)
+                                                       resolved: analysis.swiftPackages, warn: ui.warn),
+            linkerSettings: Self.linkerSettings(of: plan.pods.filter { layout.binaryTargets.contains($0.name) }, platform: platform.name)
         )
         let sourcePods = Set(plan.podTargets.filter(\.shouldBuild).map(\.podName))
         let commonExports = DistributionManifest.renderCommonExports(layout: layout, libraries: sourcePods)
@@ -174,6 +175,22 @@ public struct DistributionBuilder: Sendable {
             dependencies.append(.init(url: package.url, requirement: .range(range.lower, range.upper), products: products))
         }
         return dependencies.sorted { $0.url < $1.url }
+    }
+
+    /// The podspec `frameworks`, `weak_frameworks` and `libraries` of the activated specs of `pods` (with inherited
+    /// values). Prebuilt objects often carry no autolink entries, so without these a consumer links the system
+    /// libraries they need only by accident, through some other module.
+    static func linkerSettings(of pods: [InstalledPod], platform: Platform.Name) -> DistributionManifest.LinkerSettings {
+        var frameworks = Set<String>()
+        var libraries = Set<String>()
+        for pod in pods {
+            let specs = pod.activatedSpecs.compactMap { pod.spec.subspec(named: $0) }
+            for consumer in (specs.isEmpty ? [pod.spec] : specs).map({ $0.consumer(for: platform) }) {
+                frameworks.formUnion(consumer.frameworks + consumer.weakFrameworks)
+                libraries.formUnion(consumer.libraries)
+            }
+        }
+        return .init(frameworks: frameworks.sorted(), libraries: libraries.sorted())
     }
 
     /// Last path component without `.git`, lowercased (same as `SwiftPackageDependency.identity`).

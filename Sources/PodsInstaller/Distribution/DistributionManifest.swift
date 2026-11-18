@@ -10,8 +10,15 @@ struct DistributionManifest {
         let products: [String]
     }
 
+    /// System frameworks and libraries the binary targets need, linked through `Common`. SwiftPM has no weak linking,
+    /// so `weak_frameworks` are among `frameworks`.
+    struct LinkerSettings: Equatable, Sendable {
+        let frameworks: [String]
+        let libraries: [String]
+    }
+
     /// Deterministic: the output depends only on the values passed in, never on dictionary or array order
-    /// of `checksums` and `dependencies`. Products and their targets keep the order of `layout`.
+    /// of `checksums`, `dependencies` and `linkerSettings`. Products and their targets keep the order of `layout`.
     /// - Parameter checksums: binary target name to the SHA-256 of its zip; every binary target needs one.
     static func render(
         settings: DistributionSettings,
@@ -19,7 +26,8 @@ struct DistributionManifest {
         platform: Platform,
         layout: DistributionLayout,
         checksums: [String: String],
-        dependencies: [Dependency]
+        dependencies: [Dependency],
+        linkerSettings: LinkerSettings
     ) -> String {
         let dependencies = dependencies.sorted { $0.url < $1.url }
         let baseURL = settings.url.hasSuffix("/") ? String(settings.url.dropLast()) : settings.url
@@ -68,7 +76,16 @@ struct DistributionManifest {
         lines.append("      name: \"Common\",")
         lines.append("      dependencies: [")
         lines += commonDependencies.map { "        \($0)," }
-        lines += ["      ]),", "  ]", ")", ""]
+        let linked = Set(linkerSettings.frameworks).sorted().map { ".linkedFramework(\(literal($0)))" }
+            + Set(linkerSettings.libraries).sorted().map { ".linkedLibrary(\(literal($0)))" }
+        if linked.isEmpty {
+            lines.append("      ]),")
+        } else {
+            lines += ["      ],", "      linkerSettings: ["]
+            lines += linked.map { "        \($0)," }
+            lines.append("      ]),")
+        }
+        lines += ["  ]", ")", ""]
         return lines.joined(separator: "\n")
     }
 

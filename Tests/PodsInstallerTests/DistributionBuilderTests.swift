@@ -4,6 +4,7 @@ import PodsCore
 @testable import PodsInstaller
 import PodsPodfile
 import PodsSources
+import PodsSpec
 import Synchronization
 import Testing
 
@@ -217,6 +218,21 @@ struct DistributionBuilderTests {
         }
     }
 
+    /// The activated specs' system frameworks and libraries, inherited ones included; specs not activated add nothing.
+    @Test func linkerSettingsOfActivatedSpecs() throws {
+        let spec = try Specification(json: JSON(parsing: """
+        {"name": "Pod", "version": "1.0.0", "platforms": {"ios": "15.0"}, "frameworks": "UIKit", "subspecs": [
+          {"name": "A", "weak_frameworks": "CoreMotion", "libraries": ["z", "c++"]},
+          {"name": "B", "frameworks": "WebKit"}
+        ]}
+        """))
+        let pod = InstalledPod(spec: spec, activatedSpecs: ["Pod/A"], sourceName: nil, externalSource: nil,
+                               location: root, isLocal: true, checkoutOptions: [:])
+
+        #expect(DistributionBuilder.linkerSettings(of: [pod], platform: .ios)
+            == .init(frameworks: ["CoreMotion", "UIKit"], libraries: ["c++", "z"]))
+    }
+
     @Test func verificationManifestUsesLocalXCFrameworks() throws {
         let manifest = """
             .binaryTarget(
@@ -279,6 +295,8 @@ struct DistributionBuilderTests {
               checksum: "\(checksum)"),
         """))
         #expect(try String(contentsOf: root.appendingPathComponent("Package.swift"), encoding: .utf8) == manifest)
+        // `Prebuilt`'s objects carry no autolink entry for CoreMedia; Common links it.
+        #expect(manifest.contains(#".linkedFramework("CoreMedia")"#))
         #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("Sources/Common/export.swift").path))
         // The output directory is a complete package apart from the binary target URLs: verification builds it.
         #expect(FileManager.default.fileExists(atPath: output.appendingPathComponent("Sources/Common/export.swift").path))

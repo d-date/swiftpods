@@ -41,9 +41,12 @@ struct DistributionManifestTests {
               products: ["nanopb"]),
     ]
 
-    static func render(dependencies: [DistributionManifest.Dependency] = dependencies, checksums: [String: String] = checksums()) -> String {
+    static let linkerSettings = DistributionManifest.LinkerSettings(frameworks: ["UIKit", "CoreMedia", "UIKit"], libraries: ["z", "c++"])
+
+    static func render(dependencies: [DistributionManifest.Dependency] = dependencies, checksums: [String: String] = checksums(),
+                       linkerSettings: DistributionManifest.LinkerSettings = linkerSettings) -> String {
         DistributionManifest.render(settings: settings, version: "1.2.3", platform: platform, layout: layout,
-                                    checksums: checksums, dependencies: dependencies)
+                                    checksums: checksums, dependencies: dependencies, linkerSettings: linkerSettings)
     }
 
     static let golden = #"""
@@ -94,6 +97,12 @@ let package = Package(
         .product(name: "GULLogger", package: "GoogleUtilities"),
         .product(name: "GULNSData", package: "GoogleUtilities"),
         .product(name: "FBLPromises", package: "promises"),
+      ],
+      linkerSettings: [
+        .linkedFramework("CoreMedia"),
+        .linkedFramework("UIKit"),
+        .linkedLibrary("c++"),
+        .linkedLibrary("z"),
       ]),
   ]
 )
@@ -115,6 +124,16 @@ let package = Package(
 
         let output = try await Shell().run("swift", ["package", "dump-package"], in: root)
         #expect(output.stdout.contains("\"name\" : \"Acme\""))
+    }
+
+    @Test func omitsEmptyLinkerSettings() {
+        let manifest = Self.render(linkerSettings: .init(frameworks: [], libraries: []))
+        #expect(!manifest.contains("linkerSettings"))
+        #expect(manifest.contains("""
+                .product(name: "FBLPromises", package: "promises"),
+              ]),
+          ]
+        """))
     }
 
     @Test func renderingIsDeterministic() {
