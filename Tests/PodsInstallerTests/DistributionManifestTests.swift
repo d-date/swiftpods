@@ -194,10 +194,32 @@ struct ResourceBundlesTests {
                               json: #", "vendored_frameworks": "Frameworks/Pod.framework", "resource_bundles": {"A": "Resources/A/*"}"#,
                               directories: ["Resources/A", "Frameworks/Pod.framework/A.bundle", "Frameworks/Pod.framework/Sub/B.bundle"])
         let other = try makePod("Other", in: root, json: #", "resource_bundles": {"C": "Resources/C/*"}"#, directories: ["Resources/C"])
-        let bundles = ResourceBundles.collect(pods: [pod, other], podsWithBinary: ["Pod"])
+        let (bundles, warnings) = ResourceBundles.collect(pods: [pod, other], podsWithBinary: ["Pod"], builtProducts: [:])
+        #expect(warnings.isEmpty)
 
         #expect(bundles.map(\.name) == ["A", "B"])
         #expect(bundles[0].directory.path == root.appendingPathComponent("Pod/Resources/A").path)
         #expect(bundles[1].directory.lastPathComponent == "B.bundle")
+    }
+
+    /// Pods built from source get their bundles from xcodebuild's products; a declared bundle that is nowhere is reported.
+    @Test func takesBuiltBundlesOfSourcePods() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("swiftpods-bundles-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = try makePod("Source", in: root, json: #", "source_files": "*.m", "resource_bundles": {"Privacy": "Privacy/*", "Gone": "Gone/*"}"#,
+                                 directories: [])
+        let prebuilt = try makePod("Prebuilt", in: root, json: #", "vendored_frameworks": "Prebuilt.framework", "resource_bundles": {"Missing": "Missing/*"}"#,
+                                   directories: ["Prebuilt.framework"])
+        let products = root.appendingPathComponent("build/Release-iphoneos/Source")
+        try FileManager.default.createDirectory(at: products.appendingPathComponent("Privacy.bundle"), withIntermediateDirectories: true)
+
+        let (bundles, warnings) = ResourceBundles.collect(pods: [source, prebuilt], podsWithBinary: ["Source", "Prebuilt"],
+                                                          builtProducts: ["Source": products])
+
+        #expect(bundles.map(\.name) == ["Privacy"])
+        #expect(bundles.first?.directory.path == products.appendingPathComponent("Privacy.bundle").path)
+        #expect(warnings.count == 2)
+        #expect(warnings.contains { $0.contains("Missing") && $0.contains("Prebuilt") })
+        #expect(warnings.contains { $0.contains("Gone") && $0.contains("Source") })
     }
 }

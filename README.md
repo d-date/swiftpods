@@ -224,7 +224,8 @@ swiftpods package --version 9.0.3
   -resolvePackageDependencies` does not print it (Xcode 27.2), and whether the Xcode UI shows it was not
   checked. Do not rely on consumers seeing it.
 * **Outputs**, in `build/distribution` next to the Podfile or `--output`: `<Module>.xcframework.zip` for
-  every binary target (and the unzipped xcframework), `<Bundle>.bundle.zip` for every resource bundle,
+  every binary target (and the unzipped xcframework), `<Bundle>.bundle.zip` for every resource bundle
+  (as built by `xcodebuild` for source pods; a declared bundle that is not found is reported),
   `Package.swift` and `Sources/Common/export.swift`. The last two are also written next to the Podfile.
   Xcframeworks, bundles and their zips left in the output directory by an earlier run are removed first,
   and the command lists the files it wrote.

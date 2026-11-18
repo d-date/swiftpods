@@ -96,8 +96,14 @@ public struct DistributionBuilder: Sendable {
         }
         try await ui.section("Zipping resource bundles") {
             let staging = work.appendingPathComponent("bundles")
-            for bundle in ResourceBundles.collect(pods: plan.pods, podsWithBinary: Set(layout.binaryTargets)) {
-                // Podspec bundles live in `Resources/<Name>`, without the extension the zip must contain.
+            let built = plan.podTargets.filter { $0.shouldBuild && $0.platform.name == platform.name }.map { target in
+                (target.podName, symroot.appendingPathComponent("Release-\(SDK.iphoneos.rawValue)").appendingPathComponent(target.name))
+            }
+            let (bundles, warnings) = ResourceBundles.collect(pods: plan.pods, podsWithBinary: Set(layout.binaryTargets),
+                                                              builtProducts: Dictionary(built, uniquingKeysWith: { first, _ in first }))
+            for warning in warnings { ui.warn(warning) }
+            for bundle in bundles {
+                // Prebuilt pods' podspec bundles live in `Resources/<Name>`, without the extension the zip must contain.
                 let staged = staging.appendingPathComponent("\(bundle.name).bundle")
                 try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
                 if FileManager.default.fileExists(atPath: staged.path) { try FileManager.default.removeItem(at: staged) }

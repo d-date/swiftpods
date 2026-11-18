@@ -4,12 +4,17 @@ import PodsSpec
 
 /// Finds the resource bundles a distribution ships next to its xcframeworks as `<Name>.bundle.zip`.
 enum ResourceBundles {
-    /// `Resources/<name>` of the pods with binaries, for each of their podspec `resource_bundles` keys, plus `*.bundle`
-    /// directories nested up to two levels inside their vendored frameworks; deduplicated by bundle name
-    /// (first wins, pods sorted by name, podspec bundles before nested ones).
-    static func collect(pods: [InstalledPod], podsWithBinary: Set<String>) -> [(name: String, directory: URL)] {
+    /// For each podspec `resource_bundles` key of the activated specs of the pods with binaries: `<Name>.bundle` in
+    /// the pod's build products directory for pods built from source (`builtProducts`), `Resources/<Name>` of the pod
+    /// for prebuilt ones. Plus `*.bundle` directories nested up to two levels inside their vendored frameworks.
+    /// Deduplicated by bundle name (first wins, pods sorted by name, podspec bundles before nested ones).
+    /// - Parameter builtProducts: pod name → the directory xcodebuild put the products of its target in.
+    /// - Returns: the bundles, and a warning per declared bundle that was not found.
+    static func collect(pods: [InstalledPod], podsWithBinary: Set<String>,
+                        builtProducts: [String: URL]) -> (bundles: [(name: String, directory: URL)], warnings: [String]) {
         var seen = Set<String>()
         var result: [(name: String, directory: URL)] = []
+        var warnings: [String] = []
         func add(_ name: String, _ directory: URL) {
             if seen.insert(name).inserted { result.append((name, directory)) }
         }
@@ -19,11 +24,16 @@ enum ResourceBundles {
             let specs = pod.activatedSpecs.compactMap { pod.spec.subspec(named: $0) }
             let consumers = (specs.isEmpty ? [pod.spec] : specs).map { $0.consumer(for: .ios) }
 
-            for name in consumers.flatMap(\.resourceBundles).map(\.name) {
-                let directory = pod.location.appendingPathComponent("Resources").appendingPathComponent(name)
+            var declared: [String] = []
+            for name in consumers.flatMap(\.resourceBundles).map(\.name) where !declared.contains(name) { declared.append(name) }
+            for name in declared {
+                let directory = builtProducts[pod.name].map { $0.appendingPathComponent("\(name).bundle") }
+                    ?? pod.location.appendingPathComponent("Resources").appendingPathComponent(name)
                 var isDirectory: ObjCBool = false
                 if fileManager.fileExists(atPath: directory.path, isDirectory: &isDirectory), isDirectory.boolValue {
                     add(name, directory)
+                } else {
+                    warnings.append("Resource bundle \(name) of \(pod.name) was not found at \(directory.path), so it is not shipped.")
                 }
             }
 
@@ -35,7 +45,7 @@ enum ResourceBundles {
                 }
             }
         }
-        return result
+        return (result, warnings)
     }
 
     /// `*.bundle` directories at most `depth` levels below `directory`, sorted by path.

@@ -49,15 +49,16 @@ struct DistributionBuilderTests {
         """, "Podfile.swift")
     }
 
-    /// `Source`: an Objective-C source pod. `Prebuilt`: a vendored static framework (clang-built objects, device
+    /// `Source`: an Objective-C source pod with a resource bundle. `Prebuilt`: a vendored static framework (clang-built objects, device
     /// arm64 + simulator x86_64, no Info.plist, a module map) calling into `Source` and CoreMedia. Its objects are
     /// built without modules, so like ML Kit's they carry no autolink entry: CoreMedia is linked only because
     /// the module's header imports it.
     private func writePods() async throws {
         try write("""
         {"name":"Source","version":"1.0.0","platforms":{"ios":"15.0"},"source":{"git":"https://example.com/Source.git","tag":"1.0.0"},
-         "source_files":"*.{h,m}","public_header_files":"*.h"}
+         "source_files":"*.{h,m}","public_header_files":"*.h","resource_bundles":{"SourceResources":"Resources/*.txt"}}
         """, "LocalPods/Source/Source.podspec.json")
+        try write("data\n", "LocalPods/Source/Resources/data.txt")
         try write("int SourceValue(void);\n", "LocalPods/Source/SourceValue.h")
         try write("#import \"SourceValue.h\"\n\nint SourceValue(void) { return 1; }\n", "LocalPods/Source/SourceValue.m")
 
@@ -301,7 +302,7 @@ struct DistributionBuilderTests {
         #expect(!FileManager.default.fileExists(atPath: output.appendingPathComponent("Gone.xcframework.zip").path))
 
         #expect(output.standardizedFileURL.path == root.appendingPathComponent("build/distribution").standardizedFileURL.path)
-        for file in ["Prebuilt.xcframework.zip", "Source.xcframework.zip", "Package.swift"] {
+        for file in ["Prebuilt.xcframework.zip", "Source.xcframework.zip", "SourceResources.bundle.zip", "Package.swift"] {
             #expect(FileManager.default.fileExists(atPath: output.appendingPathComponent(file).path), "\(file)")
         }
         let manifest = try String(contentsOf: output.appendingPathComponent("Package.swift"), encoding: .utf8)
