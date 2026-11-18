@@ -41,9 +41,8 @@ struct DistributionRequirementTests {
         }
     }
 
-    @Test func overriddenUnificationIsUnsafe() throws {
-        let declared = try Requirement(parsing: ">= 3.5.0, < 6.0.0")
-        let unification = PackageUnifier.Unification(
+    func gtmUnification(declared: Requirement, podAccepted: [Version]) -> PackageUnifier.Unification {
+        PackageUnifier.Unification(
             podRoot: "GTMSessionFetcher",
             packageURL: "https://github.com/google/Gtm-Session-Fetcher.git",
             allowedVersions: versions("3.5.0", "5.0.0"),
@@ -51,10 +50,16 @@ struct DistributionRequirementTests {
             upperBound: Version("6.0.0")!,
             allowedCommits: [],
             taggedVersions: versions("3.3.2", "3.5.0", "5.0.0"),
-            podAcceptedVersions: versions("3.3.2", "3.5.0"),
+            podAcceptedVersions: podAccepted,
             podfileRequirement: declared,
-            unsafeOverrideReason: "r"
+            unsafeOverrideReason: "r",
+            podRequirements: ["< 4.0, >= 3.3", "~> 3.4"]
         )
+    }
+
+    @Test func overriddenUnificationIsUnsafe() throws {
+        let declared = try Requirement(parsing: ">= 3.5.0, < 6.0.0")
+        let unification = gtmUnification(declared: declared, podAccepted: versions("3.3.2", "3.5.0"))
         let result = try DistributionRequirement.forUnification(unification, pinned: Version("5.0.0")!, declared: declared)
         guard case let .unsafe(lower, upper, warning) = result else {
             Issue.record("expected .unsafe, got \(result)")
@@ -64,7 +69,43 @@ struct DistributionRequirementTests {
         #expect(upper == Version("6.0.0")!)
         #expect(warning.contains("unsafe"))
         #expect(warning.contains("Reason: r"))
+        #expect(warning.contains("gtm-session-fetcher 3.5.0..<6.0.0 may be outside the versions the pods accept"))
+        // The pods' own requirements, not the package versions they were matched to.
+        #expect(warning.contains("the pods require GTMSessionFetcher < 4.0, >= 3.3; ~> 3.4"))
+        #expect(!warning.contains("3.3.2"))
+    }
+
+    /// An override whose range only holds versions the pods accept is still flagged, without claiming it leaves them.
+    @Test func overrideWithinAcceptedVersions() throws {
+        let declared = try Requirement(parsing: ">= 3.5.0, < 6.0.0")
+        let unification = gtmUnification(declared: declared, podAccepted: versions("3.3.2", "3.5.0", "5.0.0"))
+        let result = try DistributionRequirement.forUnification(unification, pinned: Version("5.0.0")!, declared: declared)
+        guard case let .unsafe(_, _, warning) = result else {
+            Issue.record("expected .unsafe, got \(result)")
+            return
+        }
+        #expect(!warning.contains("outside"))
         #expect(warning.contains("gtm-session-fetcher 3.5.0..<6.0.0"))
-        #expect(warning.contains("GTMSessionFetcher accepts 3.3.2...3.5.0"))
+        #expect(warning.contains("the pods require GTMSessionFetcher < 4.0, >= 3.3; ~> 3.4"))
+        #expect(warning.contains("Reason: r"))
+    }
+
+    /// Without an override, the requirement is the run of accepted versions around the pinned one.
+    @Test func unificationWithoutOverrideIsNarrowed() throws {
+        let unification = PackageUnifier.Unification(
+            podRoot: "GoogleUtilities",
+            packageURL: "https://github.com/google/GoogleUtilities.git",
+            allowedVersions: versions("8.0.0", "8.1.0", "8.2.0"),
+            lowerBound: Version("8.0.0")!,
+            upperBound: Version("8.2.1")!,
+            allowedCommits: [],
+            taggedVersions: versions("7.0.0", "8.0.0", "8.1.0", "8.1.5", "8.2.0"),
+            podAcceptedVersions: versions("8.0.0", "8.1.0", "8.2.0"),
+            podfileRequirement: try Requirement(parsing: ">= 8.0.0, < 9.0.0"),
+            unsafeOverrideReason: nil
+        )
+        let result = try DistributionRequirement.forUnification(unification, pinned: Version("8.1.0")!,
+                                                                declared: unification.podfileRequirement)
+        #expect(result == .closedRange(Version("8.0.0")!, Version("8.1.0")!))
     }
 }

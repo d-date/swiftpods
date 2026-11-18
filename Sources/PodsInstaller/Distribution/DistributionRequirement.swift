@@ -36,10 +36,14 @@ enum DistributionRequirement: Equatable, Sendable {
             let range = try SwiftPackageResolver.range(of: declared, url: unification.packageURL)
             bounds = (range.lower, range.upper)
         }
-        let accepted = unification.podAcceptedVersions
-        let acceptedText = if let lowest = accepted.first, let highest = accepted.last { "\(lowest)...\(highest)" } else { "no version" }
-        let warning = "\(identity(of: unification.packageURL)) \(bounds.0)..<\(bounds.1) is outside the versions the pods accept "
-            + "(\(unification.podRoot) accepts \(acceptedText)); ABI compatibility is unsafe and not verified by swiftpods. Reason: \(reason)"
+        // Within the accepted versions when every tagged version in the declared range is one a pod version is built from.
+        let accepted = Set(unification.podAcceptedVersions)
+        let withinAccepted = unification.taggedVersions.filter { $0 >= bounds.0 && $0 < bounds.1 }.allSatisfy(accepted.contains)
+        let package = "\(identity(of: unification.packageURL)) \(bounds.0)..<\(bounds.1)"
+        let requirements = unification.podRequirements.isEmpty ? "" : " (the pods require \(unification.podRoot) \(unification.podRequirements.joined(separator: "; ")))"
+        let warning = withinAccepted
+            ? "\(package) overrides the pods' requirements\(requirements) as unsafe, although the pods accept every version in it. Reason: \(reason)"
+            : "\(package) may be outside the versions the pods accept\(requirements); ABI compatibility is unsafe and not verified by swiftpods. Reason: \(reason)"
         return .unsafe(lower: bounds.0, upper: bounds.1, warning: warning)
     }
 

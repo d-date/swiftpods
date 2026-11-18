@@ -36,7 +36,8 @@ struct PackageUnifierTests {
                 taggedVersions: [Version(3, 3, 2), Version(3, 5, 0), Version(4, 0, 0)],
                 podAcceptedVersions: [Version(3, 3, 2), Version(3, 5, 0)],
                 podfileRequirement: nil,
-                unsafeOverrideReason: nil
+                unsafeOverrideReason: nil,
+                podRequirements: [try Requirement(parsing: ">= 3.3.2, < 4.0").description]
             ),
         ])
     }

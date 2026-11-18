@@ -55,6 +55,8 @@ struct PackageUnifier {
         /// The range Podfile.swift declares for the package; nil for packages that are only indirect.
         let podfileRequirement: Requirement?
         let unsafeOverrideReason: String?
+        /// The distinct requirements on the pod (from other pods and the Podfile), as written.
+        var podRequirements: [String] = []
     }
 
     static func unify(pods: [PodCandidate], packages: [PackageCandidate]) throws(PodsError) -> [Unification] {
@@ -119,7 +121,8 @@ struct PackageUnifier {
                 taggedVersions: tagged,
                 podAcceptedVersions: podAccepted,
                 podfileRequirement: package.podfileRequirement,
-                unsafeOverrideReason: package.unsafeOverrideReason
+                unsafeOverrideReason: package.unsafeOverrideReason,
+                podRequirements: pod.requirements.map(\.requirement.description).reduce(into: []) { if !$0.contains($1) { $0.append($1) } }
             ))
         }
         return unifications.sorted { $0.podRoot < $1.podRoot }
