@@ -72,9 +72,6 @@ struct DistributionLayoutTests {
         "SSZipArchive": [],
     ]
 
-    static let gulURL = "https://github.com/google/GoogleUtilities.git"
-    static let nanopbURL = "https://github.com/firebase/nanopb.git"
-
     static var mlKitBinaries: Set<String> {
         var names = Set(mlKitDependencies.keys.map { String($0.split(separator: "/")[0]) }.filter { $0.hasPrefix("MLKit") || $0 == "MLImage" })
         names.formUnion(["GoogleToolboxForMac", "SSZipArchive"])
@@ -89,13 +86,12 @@ struct DistributionLayoutTests {
             ],
             dependencies: Self.mlKitDependencies,
             podsWithBinary: Self.mlKitBinaries,
-            unified: ["GoogleUtilities": Self.gulURL, "nanopb": Self.nanopbURL]
+            unified: ["GoogleUtilities", "nanopb"]
         )
         #expect(layout.products.map(\.name) == ["MLKitBarcodeScanning", "MLKitDigitalInkRecognition", "MLKitLanguageID", "MLKitPoseDetectionAccurate"])
         #expect(layout.commonTargets == ["GoogleToolboxForMac", "MLKitCommon"])
         #expect(layout.products[3].targets == ["MLKitPoseDetectionAccurate", "MLImage", "MLKitPoseDetectionCommon", "MLKitVision", "MLKitXenoCommon", "Common"])
         #expect(!layout.products[2].targets.contains("MLKitXenoCommon"))
-        #expect(layout.unifiedPackageURLs == [Self.gulURL, Self.nanopbURL].sorted())
         #expect(layout.binaryTargets.contains("SSZipArchive"))
         #expect(!layout.binaryTargets.contains("GoogleUtilities"))
         #expect(layout.warnings.isEmpty)
@@ -106,12 +102,11 @@ struct DistributionLayoutTests {
             declared: ["Umbrella/Only", "Real"],
             dependencies: ["Umbrella/Only": ["Unified"], "Real": []],
             podsWithBinary: ["Real"],
-            unified: ["Unified": "https://example.com/unified.git"]
+            unified: ["Unified"]
         )
         #expect(layout.products.map(\.name) == ["Real"])
         #expect(layout.warnings.count == 1)
         #expect(layout.warnings.first?.contains("Umbrella/Only") == true)
-        #expect(layout.unifiedPackageURLs == ["https://example.com/unified.git"])
     }
 
     @Test func severalDirectBinaryDependenciesWarn() {
@@ -119,7 +114,7 @@ struct DistributionLayoutTests {
             declared: ["Umbrella/Both"],
             dependencies: ["Umbrella/Both": ["Zeta", "Alpha"], "Alpha": [], "Zeta": []],
             podsWithBinary: ["Alpha", "Zeta"],
-            unified: [:]
+            unified: []
         )
         #expect(layout.products.map(\.name) == ["Alpha"])
         #expect(layout.warnings.count == 1)
@@ -131,7 +126,7 @@ struct DistributionLayoutTests {
             declared: ["Umbrella", "Empty"],
             dependencies: ["Umbrella": ["Leaf", "Shared"], "Leaf": ["Shared"], "Shared": [], "Empty": []],
             podsWithBinary: ["Leaf", "Shared"],
-            unified: [:]
+            unified: []
         )
         // Umbrella has no binary of its own, so it is never a target; Leaf becomes the product.
         #expect(layout.products.map(\.name) == ["Leaf"])
@@ -143,18 +138,16 @@ struct DistributionLayoutTests {
     }
 
     @Test func unifiedPodsAreNeverBinaryTargetsOrProducts() {
-        let url = "https://example.com/unified.git"
         let layout = DistributionLayout.derive(
             declared: ["Umbrella/Sub", "Real"],
             dependencies: ["Umbrella/Sub": ["Unified"], "Real": ["Unified"], "Unified": []],
             podsWithBinary: ["Real", "Unified"],
-            unified: ["Unified": url]
+            unified: ["Unified"]
         )
         #expect(layout.products.map(\.name) == ["Real"])
         #expect(layout.products.first?.targets == ["Real", "Common"])
         #expect(layout.commonTargets.isEmpty)
         #expect(layout.binaryTargets == ["Real"])
-        #expect(layout.unifiedPackageURLs == [url])
         #expect(layout.warnings.count == 1)
     }
 
@@ -163,7 +156,7 @@ struct DistributionLayoutTests {
             declared: ["Main"],
             dependencies: ["Main": ["Base", "Extra"], "Base": [], "Extra": []],
             podsWithBinary: ["Main", "Base", "Extra"],
-            unified: [:]
+            unified: []
         )
         #expect(layout.commonTargets == ["Base", "Extra"])
         #expect(layout.products.first?.targets == ["Main", "Common"])
@@ -174,7 +167,7 @@ struct DistributionLayoutTests {
             declared: ["A", "B"],
             dependencies: ["A": ["Base"], "B": ["A", "Base", "Own"], "Base": [], "Own": []],
             podsWithBinary: ["A", "B", "Base", "Own"],
-            unified: [:]
+            unified: []
         )
         #expect(layout.commonTargets == ["Base"])
         #expect(layout.products.map(\.targets) == [["A", "Common"], ["B", "A", "Own", "Common"]])

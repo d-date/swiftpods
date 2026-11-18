@@ -64,7 +64,7 @@ public struct DistributionBuilder: Sendable {
             declared: declared,
             dependencies: Self.specDependencies(of: plan.pods, platform: platform.name),
             podsWithBinary: podsWithBinary,
-            unified: Dictionary(analysis.unifications.map { ($0.podRoot, $0.packageURL) }, uniquingKeysWith: { first, _ in first })
+            unified: Set(analysis.unifications.map(\.podRoot))
         )
         for warning in layout.warnings { ui.warn(warning) }
         guard !layout.products.isEmpty else { throw PodsError("No pod of target `\(target.name)` has a binary to distribute.") }

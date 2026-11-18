@@ -11,24 +11,22 @@ struct DistributionLayout: Equatable, Sendable {
     let commonTargets: [String]
     /// Every binary target of any product, sorted.
     let binaryTargets: [String]
-    /// Packages the Common target depends on, sorted.
-    let unifiedPackageURLs: [String]
     let warnings: [String]
 
     /// - Parameters:
     ///   - declared: pod dependency names of the distribution target, in order (may be subspecs).
     ///   - dependencies: pod or subspec name to the pod or subspec names it depends on.
     ///   - podsWithBinary: roots that produce a binary (vendored framework or compiled sources).
-    ///   - unified: pod root to package URL.
+    ///   - unified: roots of the pods unified with Swift packages.
     static func derive(
         declared: [String],
         dependencies: [String: [String]],
         podsWithBinary: Set<String>,
-        unified: [String: String]
+        unified: Set<String>
     ) -> DistributionLayout {
         var warnings: [String] = []
         // Unified pods are Swift packages, never binary targets, even if they also produce a binary.
-        let binaries = podsWithBinary.subtracting(unified.keys)
+        let binaries = podsWithBinary.subtracting(unified)
         // Product name to the node names its closure starts from, in declaration order.
         var productStarts: [(name: String, starts: [String])] = []
 
@@ -79,14 +77,10 @@ struct DistributionLayout: Equatable, Sendable {
             return Product(name: name, targets: [name] + rest + ["Common"])
         }
 
-        let reachableRoots = Set(reachable(from: declared, dependencies: dependencies).map(rootName))
-        let urls = Set(reachableRoots.compactMap { unified[$0] })
-
         return DistributionLayout(
             products: products,
             commonTargets: common.sorted(),
             binaryTargets: closures.values.reduce(into: Set<String>()) { $0.formUnion($1) }.sorted(),
-            unifiedPackageURLs: urls.sorted(),
             warnings: warnings
         )
     }
