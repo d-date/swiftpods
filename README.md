@@ -226,6 +226,8 @@ swiftpods package --version 9.0.3
 * **Outputs**, in `build/distribution` next to the Podfile or `--output`: `<Module>.xcframework.zip` for
   every binary target (and the unzipped xcframework), `<Bundle>.bundle.zip` for every resource bundle,
   `Package.swift` and `Sources/Common/export.swift`. The last two are also written next to the Podfile.
+  Xcframeworks, bundles and their zips left in the output directory by an earlier run are removed first,
+  and the command lists the files it wrote.
   Binary target URLs are `<distribution url>/releases/download/<version>/<Module>.xcframework.zip`; upload
   the zips there. Resource bundles are not part of the package: consumers add the unzipped bundles to
   their app.

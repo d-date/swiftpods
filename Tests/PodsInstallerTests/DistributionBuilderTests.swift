@@ -233,6 +233,22 @@ struct DistributionBuilderTests {
             == .init(frameworks: ["CoreMotion", "UIKit"], libraries: ["c++", "z"]))
     }
 
+    /// Artifacts of an earlier run must not survive into the output, where they would be uploaded with the new ones.
+    @Test func removesStaleArtifacts() throws {
+        let output = root.appendingPathComponent("output")
+        for directory in ["Old.xcframework", "Old.bundle", "Sources/Common"] {
+            try FileManager.default.createDirectory(at: output.appendingPathComponent(directory), withIntermediateDirectories: true)
+        }
+        for file in ["Old.xcframework.zip", "Old.bundle.zip", "Package.swift", "notes.txt"] {
+            try Data().write(to: output.appendingPathComponent(file))
+        }
+
+        let removed = try DistributionBuilder.removeStaleArtifacts(in: output)
+
+        #expect(removed == ["Old.bundle", "Old.bundle.zip", "Old.xcframework", "Old.xcframework.zip"])
+        #expect(try FileManager.default.contentsOfDirectory(atPath: output.path).sorted() == ["Package.swift", "Sources", "notes.txt"])
+    }
+
     @Test func verificationManifestUsesLocalXCFrameworks() throws {
         let manifest = """
             .binaryTarget(
@@ -279,8 +295,10 @@ struct DistributionBuilderTests {
     func buildsFixtureDistribution() async throws {
         try writePodfile()
         try await writePods()
+        try write("stale", "build/distribution/Gone.xcframework.zip")
 
         let output = try await DistributionBuilder(context: try context(), options: DistributionOptions(version: "1.0.0", outputDirectory: nil)).build()
+        #expect(!FileManager.default.fileExists(atPath: output.appendingPathComponent("Gone.xcframework.zip").path))
 
         #expect(output.standardizedFileURL.path == root.appendingPathComponent("build/distribution").standardizedFileURL.path)
         for file in ["Prebuilt.xcframework.zip", "Source.xcframework.zip", "Package.swift"] {

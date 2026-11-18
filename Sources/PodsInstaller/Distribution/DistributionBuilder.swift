@@ -74,6 +74,8 @@ public struct DistributionBuilder: Sendable {
         let work = projectDirectory.appendingPathComponent("build/work")
         let symroot = work.appendingPathComponent("build")
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        for name in try Self.removeStaleArtifacts(in: output) { ui.message("Removed \(name) of an earlier run", style: .plain) }
+        var produced: [String] = []
 
         try await ui.section("Building pods") {
             for sdk in SDK.allCases { try await xcodebuild(sdk: sdk, platform: platform, symroot: symroot) }
@@ -86,7 +88,9 @@ public struct DistributionBuilder: Sendable {
                     throw PodsError("No pod target builds `\(name)`.")
                 }
                 let xcframework = try await assemble(podTarget, assembler: assembler, platform: platform, symroot: symroot, output: output)
-                checksums[name] = try Self.checksum(of: try await zip(xcframework, into: output))
+                let archive = try await zip(xcframework, into: output)
+                checksums[name] = try Self.checksum(of: archive)
+                produced.append(archive.lastPathComponent)
             }
             return checksums
         }
@@ -98,7 +102,7 @@ public struct DistributionBuilder: Sendable {
                 try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
                 if FileManager.default.fileExists(atPath: staged.path) { try FileManager.default.removeItem(at: staged) }
                 try FileManager.default.copyItem(at: bundle.directory, to: staged)
-                try await zip(staged, into: output)
+                produced.append(try await zip(staged, into: output).lastPathComponent)
             }
         }
 
@@ -124,8 +128,19 @@ public struct DistributionBuilder: Sendable {
                     .verify(products: layout.products.map(\.name), packageDirectory: output)
             }
         }
-        ui.message("Wrote the distribution of \(settings.name) \(options.version) to \(output.path)", style: .success)
+        ui.message("Wrote the distribution of \(settings.name) \(options.version) to \(output.path):\n"
+            + (produced + ["Package.swift", "Sources/Common/export.swift"]).map { "  \($0)" }.joined(separator: "\n"), style: .success)
         return output
+    }
+
+    /// Removes the xcframeworks, resource bundles and their zips at the top of `output`, left by an earlier run.
+    /// Returns their names, sorted.
+    static func removeStaleArtifacts(in output: URL) throws -> [String] {
+        let stale = try FileManager.default.contentsOfDirectory(atPath: output.path).filter { name in
+            [".xcframework", ".xcframework.zip", ".bundle", ".bundle.zip"].contains { name.hasSuffix($0) }
+        }.sorted()
+        for name in stale { try FileManager.default.removeItem(at: output.appendingPathComponent(name)) }
+        return stale
     }
 
     /// The packages `Common` depends on, sorted by URL: every package a pod is unified with, narrowed to what the pods
