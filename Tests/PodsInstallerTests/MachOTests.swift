@@ -29,6 +29,28 @@ struct MachOTests {
         return output
     }
 
+    /// Drops the load commands of the given types from a little-endian 64-bit object, as some
+    /// vendored binaries ship without any platform command. Freed bytes stay as header padding.
+    private func removeLoadCommands(_ types: Set<UInt32>, from file: URL) throws {
+        var bytes = [UInt8](try Data(contentsOf: file))
+        func uint32(_ offset: Int) -> UInt32 { (0 ..< 4).reduce(0) { $0 | UInt32(bytes[offset + $1]) << (8 * $1) } }
+        func set(_ value: UInt32, _ offset: Int) { for index in 0 ..< 4 { bytes[offset + index] = UInt8(truncatingIfNeeded: value >> (8 * index)) } }
+        let count = Int(uint32(16)), size = Int(uint32(20))
+        var kept: [UInt8] = [], keptCount = 0, offset = 32
+        for _ in 0 ..< count {
+            let commandSize = Int(uint32(offset + 4))
+            if !types.contains(uint32(offset)) {
+                kept += bytes[offset ..< offset + commandSize]
+                keptCount += 1
+            }
+            offset += commandSize
+        }
+        bytes.replaceSubrange(32 ..< 32 + size, with: kept + [UInt8](repeating: 0, count: size - kept.count))
+        set(UInt32(keptCount), 16)
+        set(UInt32(kept.count), 20)
+        try Data(bytes).write(to: file)
+    }
+
     @Test func detectsKinds() async throws {
         let device = try await object("device.o", source: "int device(void) { return 1; }\n")
         let intel = try await object("intel.o", source: "int intel(void) { return 2; }\n", target: "x86_64-apple-ios15.0-simulator")
@@ -95,5 +117,64 @@ struct MachOTests {
         #expect(archiveError?.message.contains(library.path) == true)
         #expect(archiveError?.message.contains("legacy.o") == true)
         #expect(try Data(contentsOf: library) == archiveBefore)
+    }
+
+    @Test func insertsBuildVersionIntoPlatformlessObject() async throws {
+        let device = try await object("bare.o", source: "int bare(void) { return 1; }\n")
+        try removeLoadCommands([0x32], from: device)
+        #expect(try MachO.platforms(of: device).isEmpty)
+
+        #expect(try MachO.insertBuildVersion(into: device, platform: 7, minimumOS: "15.0", sdk: "26.5.1"))
+
+        #expect(try MachO.platforms(of: device) == [7])
+        let load = try await shell.run("xcrun", ["otool", "-l", device.path]).stdout
+        #expect(load.contains("platform 7"))
+        #expect(load.contains("minos 15.0"))
+        #expect(load.contains("sdk 26.5.1"))
+        // The linker accepts it as simulator code without "no platform load command" or platform errors.
+        let link = try await shell.execute(["xcrun", "--sdk", "iphonesimulator", "clang", "-dynamiclib", "-target", "arm64-apple-ios15.0-simulator",
+                                            device.path, "-o", root.appendingPathComponent("libBare.dylib").path])
+        #expect(link.status == 0, "\(link.stderr)")
+        #expect(!link.stderr.contains("platform"), "\(link.stderr)")
+    }
+
+    @Test func insertBuildVersionLeavesObjectsWithAPlatformAlone() async throws {
+        let modern = try await object("modern.o", source: "int modern(void) { return 1; }\n")
+        // LC_VERSION_MIN_IPHONEOS, which a build version must replace rather than join.
+        let legacy = try await object("legacy.o", source: "int legacy(void) { return 1; }\n", target: "arm64-apple-ios9.0")
+
+        for file in [modern, legacy] {
+            let before = try Data(contentsOf: file)
+            #expect(try !MachO.insertBuildVersion(into: file, platform: 7, minimumOS: "15.0", sdk: "26.5"))
+            #expect(try Data(contentsOf: file) == before)
+        }
+    }
+
+    @Test func insertBuildVersionNeedsHeaderPadding() async throws {
+        let device = try await object("tight.o", source: "int tight(void) { return 1; }\n")
+        try removeLoadCommands([0x32], from: device)
+        // Make the load commands claim the freed bytes, so no padding is left before the data.
+        var bytes = [UInt8](try Data(contentsOf: device))
+        let firstData = try await shell.run("xcrun", ["otool", "-l", device.path]).stdout
+            .split(separator: "\n").compactMap { line -> Int? in
+                let parts = line.split(separator: " ")
+                return parts.first == "offset" ? Int(parts[1]) : nil
+            }.filter { $0 > 0 }.min()!
+        let sizeofcmds = UInt32(firstData - 32)
+        for index in 0 ..< 4 { bytes[20 + index] = UInt8(truncatingIfNeeded: sizeofcmds >> (8 * index)) }
+        // Extend the last command over the padding so the command list stays consistent.
+        var offset = 32, last = 32
+        let count = (0 ..< 4).reduce(0) { $0 | Int(bytes[16 + $1]) << (8 * $1) }
+        for _ in 0 ..< count {
+            last = offset
+            offset += (0 ..< 4).reduce(0) { $0 | Int(bytes[offset + 4 + $1]) << (8 * $1) }
+        }
+        let lastSize = UInt32(firstData - last)
+        for index in 0 ..< 4 { bytes[last + 4 + index] = UInt8(truncatingIfNeeded: lastSize >> (8 * index)) }
+        try Data(bytes).write(to: device)
+        let before = try Data(contentsOf: device)
+
+        #expect(try !MachO.insertBuildVersion(into: device, platform: 7, minimumOS: "15.0", sdk: "26.5"))
+        #expect(try Data(contentsOf: device) == before)
     }
 }

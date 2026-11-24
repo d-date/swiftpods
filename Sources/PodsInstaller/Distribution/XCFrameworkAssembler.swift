@@ -196,7 +196,12 @@ struct XCFrameworkAssembler {
         let patched = thin.appendingPathExtension("platform")
         let vtool = try await shell.execute(["xcrun", "vtool", "-arch", arch, "-set-build-version", String(sdk.platform),
                                              minimumOS, sdkVersion, "-replace", "-output", patched.path, thin.path])
-        if vtool.status != 0 {
+        if vtool.status == 0 {
+            try FileManager.default.removeItem(at: thin)
+            try FileManager.default.moveItem(at: patched, to: thin)
+        } else if try MachO.insertBuildVersion(into: thin, platform: sdk.platform, minimumOS: minimumOS, sdk: sdkVersion) {
+            // vtool wants more header room than the bare command needs; the padding had enough.
+        } else {
             // vtool edits in place and fails when the header has no room for the larger command, which
             // is the norm for compiler output; relinking the object lays out a new header instead.
             // `-keep_private_externs` keeps hidden symbols linkable from the rest of the library.
@@ -210,9 +215,18 @@ struct XCFrameworkAssembler {
                 ld -r: \(linker.stderr.trimmingWhitespace())
                 """)
             }
+            try FileManager.default.removeItem(at: thin)
+            try FileManager.default.moveItem(at: patched, to: thin)
         }
-        try FileManager.default.removeItem(at: thin)
-        try FileManager.default.moveItem(at: patched, to: thin)
+        // Older linkers (Xcode 26's ld) accept `-platform_version` with `-r` but write no platform.
+        let platforms = try MachO.platforms(of: thin)
+        guard platforms == [sdk.platform] else {
+            throw PodsError("""
+            Could not set the platform of the \(arch) slice \(thin.path): it names \
+            \(platforms.isEmpty ? "no platform" : "platforms \(platforms.sorted())") afterwards, not \(sdk.platform). \
+            Its header has no room for LC_BUILD_VERSION and this toolchain's `ld -r` does not add one.
+            """)
+        }
     }
 
     /// An `ar` archive of a thin object file, or the file itself when it is not an object file.

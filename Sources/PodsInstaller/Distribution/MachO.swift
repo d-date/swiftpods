@@ -43,6 +43,106 @@ enum MachO {
         try Data(bytes).write(to: file)
     }
 
+    /// Adds an LC_BUILD_VERSION (no tool entries) to a thin object file that has no platform load
+    /// command at all, writing it into the padding between the load commands and the first data.
+    ///
+    /// This is the fallback for vendored objects whose header has room for the 24-byte command but
+    /// not for what `vtool` wants, on toolchains whose `ld -r` ignores `-platform_version` (Xcode 26).
+    /// Returns false, leaving the file untouched, when the file already names a platform, is not a
+    /// thin object, has a load command whose file offsets are unknown, or lacks the padding.
+    static func insertBuildVersion(into file: URL, platform: UInt32, minimumOS: String, sdk: String) throws -> Bool {
+        var bytes = try read(file)
+        guard let header = Header(bytes, at: 0),
+              bytes.uint32(at: 12, littleEndian: header.littleEndian) == objectFileType,
+              let count = bytes.uint32(at: 16, littleEndian: header.littleEndian),
+              let commandsSize = bytes.uint32(at: 20, littleEndian: header.littleEndian),
+              let minimumOS = encodedVersion(minimumOS), let sdk = encodedVersion(sdk)
+        else { return false }
+        let littleEndian = header.littleEndian
+        let commandsEnd = header.size + Int(commandsSize)
+        guard let dataStart = try firstDataOffset(in: bytes, header: header, count: Int(count), file: file),
+              commandsEnd + buildVersionSize <= dataStart,
+              bytes[commandsEnd ..< commandsEnd + buildVersionSize].allSatisfy({ $0 == 0 })
+        else { return false }
+
+        for (index, value) in [buildVersionCommand, UInt32(buildVersionSize), platform, minimumOS, sdk, 0].enumerated() {
+            bytes.setUInt32(value, at: commandsEnd + 4 * index, littleEndian: littleEndian)
+        }
+        bytes.setUInt32(count + 1, at: 16, littleEndian: littleEndian)
+        bytes.setUInt32(commandsSize + UInt32(buildVersionSize), at: 20, littleEndian: littleEndian)
+        try Data(bytes).write(to: file)
+        return true
+    }
+
+    private static let buildVersionSize = 24
+    /// LC_VERSION_MIN_MACOSX, _IPHONEOS, _TVOS, _WATCHOS.
+    private static let versionMinCommands: Set<UInt32> = [0x24, 0x25, 0x2f, 0x30]
+    /// Load commands that hold no file offsets: UUID, LC_LINKER_OPTION, LC_SOURCE_VERSION.
+    private static let offsetFreeCommands: Set<UInt32> = [0x1b, 0x2d, 0x2a]
+    /// linkedit_data_command types: code signature, split info, function starts, data in code,
+    /// code-sign DRs, linker optimization hints, dyld exports trie, dyld chained fixups.
+    private static let linkeditDataCommands: Set<UInt32> = [0x1d, 0x1e, 0x26, 0x29, 0x2b, 0x2e, 0x8000_0033, 0x8000_0034]
+
+    /// The lowest file offset any load command points at, or nil when the object already names a
+    /// platform or has a command this reader cannot account for.
+    private static func firstDataOffset(in bytes: [UInt8], header: Header, count: Int, file: URL) throws -> Int? {
+        let littleEndian = header.littleEndian
+        func value(_ offset: Int) throws -> Int {
+            guard let value = bytes.uint32(at: offset, littleEndian: littleEndian) else {
+                throw PodsError("\(file.path) has a truncated load command at offset \(offset)")
+            }
+            return Int(value)
+        }
+        var lowest = bytes.count
+        func note(_ offset: Int) { if offset > 0 { lowest = min(lowest, offset) } }
+        var offset = header.size
+        for _ in 0 ..< count {
+            let command = UInt32(try value(offset)), size = try value(offset + 4)
+            guard size >= 8 else { throw PodsError("\(file.path) has an invalid load command at offset \(offset)") }
+            switch command {
+            case buildVersionCommand:
+                return nil
+            case _ where versionMinCommands.contains(command):
+                return nil
+            case 0x19, 0x1:  // LC_SEGMENT_64, LC_SEGMENT
+                let is64 = command == 0x19
+                let (segmentHeader, sectionSize) = is64 ? (72, 80) : (56, 68)
+                let (fileOffsetField, fileSizeField) = is64 ? (40, 48) : (32, 36)
+                if try value(offset + fileSizeField) > 0 { note(try value(offset + fileOffsetField)) }
+                let sections = try value(offset + segmentHeader - 8)
+                for index in 0 ..< sections {
+                    let section = offset + segmentHeader + index * sectionSize
+                    // offset and reloff follow the names, address and size.
+                    let fields = is64 ? (48, 56) : (40, 48)
+                    note(try value(section + fields.0))
+                    note(try value(section + fields.1))
+                }
+            case 0x2:  // LC_SYMTAB: symoff, stroff
+                note(try value(offset + 8))
+                note(try value(offset + 16))
+            case 0xb:  // LC_DYSYMTAB: tocoff, modtaboff, extrefsymoff, indirectsymoff, extreloff, locreloff
+                for field in [32, 40, 48, 56, 64, 72] { note(try value(offset + field)) }
+            case _ where linkeditDataCommands.contains(command):
+                note(try value(offset + 8))
+            case _ where offsetFreeCommands.contains(command):
+                break
+            default:
+                return nil
+            }
+            offset += size
+        }
+        return lowest
+    }
+
+    /// `X.Y.Z` as the nibble-packed `xxxx.yy.zz` that version load commands store.
+    private static func encodedVersion(_ version: String) -> UInt32? {
+        let parts = version.split(separator: ".").map { UInt32($0) }
+        guard (1 ... 3).contains(parts.count), parts.allSatisfy({ $0 != nil }) else { return nil }
+        let numbers = parts.map { $0! } + Array(repeating: 0, count: 3 - parts.count)
+        guard numbers[0] <= 0xffff, numbers[1] <= 0xff, numbers[2] <= 0xff else { return nil }
+        return numbers[0] << 16 | numbers[1] << 8 | numbers[2]
+    }
+
     /// The platforms named by every LC_BUILD_VERSION in a thin Mach-O or in the members of a thin `ar` archive.
     static func platforms(of file: URL) throws -> Set<UInt32> {
         let bytes = try read(file)
