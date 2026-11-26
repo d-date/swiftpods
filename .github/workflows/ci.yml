@@ -11,20 +11,41 @@ concurrency:
 
 jobs:
   test:
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
+
+      # Xcode supplies the SDKs, xcodebuild and the other build tools.
       - name: Select Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: latest-stable
+
+      # swiftpods needs Swift 6.4, newer than the Swift in macos-26's Xcode.
+      - name: Set up Swift
+        uses: tryswift/setup-swift@v1
+        with:
+          swift-version: '6.4.2'
+
+      # TOOLCHAINS would also redirect xcodebuild, which then fails to spawn its
+      # tools, so use the toolchain only for SwiftPM itself and for Podfile.swift
+      # (which imports the PodfileDescription module that toolchain builds).
+      - name: Scope the Swift toolchain
+        run: |
+          echo "SWIFT=$(xcrun --find swift)" >> "$GITHUB_ENV"
+          wrapper="$RUNNER_TEMP/swiftpods-swiftc"
+          printf '#!/bin/bash\nexec env TOOLCHAINS=%q xcrun --sdk macosx swiftc "$@"\n' "$TOOLCHAINS" > "$wrapper"
+          chmod +x "$wrapper"
+          echo "SWIFTPODS_SWIFTC=$wrapper" >> "$GITHUB_ENV"
+          echo "TOOLCHAINS=" >> "$GITHUB_ENV"
+
       - name: Swift version
-        run: swift --version
+        run: '"$SWIFT" --version'
       - name: Build
-        run: swift build --build-tests
+        run: '"$SWIFT" build --build-tests'
       - name: Unit and integration tests
-        run: swift test
+        run: '"$SWIFT" test'
       - name: Build generated workspaces with xcodebuild
-        run: swift test --filter integratedWorkspaceBuilds
+        run: '"$SWIFT" test --filter integratedWorkspaceBuilds'
         env:
           SWIFTPODS_XCODEBUILD: "1"
